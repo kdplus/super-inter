@@ -39,7 +39,7 @@ torch.cuda.set_device(devices[0])
 
 handle_size = 256
 Max_steps = 10000000
-batch_size = 3
+batch_size = 2
 keep_training = True
 show_img_gap = 200
 best_psnr = 0
@@ -478,8 +478,8 @@ def test(normal=1, writer=None, skip_num=1):
 
     data_list = vimeos_dataset_frames.read_data_list_file()
     seed_key = time.time()
-#     random.seed(seed_key)
-#     shuffle(data_list)
+    random.seed(seed_key)
+    shuffle(data_list)
 
     batch_size = 4
     data_size = len(data_list)
@@ -497,6 +497,8 @@ def test(normal=1, writer=None, skip_num=1):
     #     softmax = nn.LogSoftmax(dim=1)
         t = tqdm(range(data_size//batch_size), desc='loop')
         for step in t:
+            if step % skip_num != 0:
+                continue            
             batch_idx = step % epoch_num
             epoch_idx = step / epoch_num
 
@@ -639,9 +641,9 @@ if args.mode == "train":
     vimeos_dataset_frames = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE)
 
     data_list = vimeos_dataset_frames.read_data_list_file()
-#     seed_key = time.time()
-#     random.seed(seed_key)
-#     shuffle(data_list)
+    seed_key = time.time()
+    random.seed(seed_key)
+    shuffle(data_list)
 
 
     data_size = len(data_list)
@@ -659,9 +661,9 @@ if args.mode == "train":
 
         if batch_idx == 0 and step != 0:
         # Shuffle data at each epoch.
-#             seed_key = time.time()
-#             random.seed(seed_key)
-#             shuffle(data_list)
+            seed_key = time.time()
+            random.seed(seed_key)
+            shuffle(data_list)
             print("Shuffled data!")
             print('Epoch Number: %d' % int(real_step / epoch_num))
 
@@ -760,6 +762,10 @@ if args.mode == "train":
             
             loss +=  1 * inter_loss + 10 * improc_loss #+ 2 * tvl
                                  
+            # should be smooth but not smooth in detail
+            if tvl > 0.1 :
+                loss += 2 * tvl
+      
             loss.backward()
             optimizer.step()
 
@@ -788,7 +794,8 @@ if args.mode == "train":
                 writer.add_scalar('inter_loss', inter_loss.data, real_step)
                 writer.add_scalar('improc_loss', improc_loss.data, real_step)
 
-            if real_step % 3000 == 0 and real_step > 10:
+            epoch_now = real_step / (epoch_num*1.0)
+            if real_step % 5000 == 0 and real_step > 10 and epoch_num > 5:
                 print("Test!")
                 now_psnr = test(0, writer, 1)
                 print("Test end.")
@@ -802,10 +809,10 @@ if args.mode == "train":
                 coding.train()
                 improc.train()
                 
-            if real_step % 300 == 0 and real_step > 10:
-#                 print("little Test!")
-#                 test(0, writer, 50)
-#                 print("Test end.")
+            if real_step % 1000 == 0 and real_step > 10:
+                print("little Test!")
+                test(0, writer, 50)
+                print("Test end.")
                 
                     
                 torch.save(coding.state_dict(), 'coding.pkl')
