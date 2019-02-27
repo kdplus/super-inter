@@ -4,7 +4,7 @@ import time
 import math
 import numpy as np
 import torch
-import torch.utils.serialization
+# import torch.utils.serialization
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn import init
