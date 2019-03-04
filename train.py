@@ -23,7 +23,7 @@ from tensorboardX import SummaryWriter
 import torchvision.utils as vutils
 import gc
 from skimage import data, img_as_float
-from skimage.measure import compare_ssim as ssim
+from skimage.measure import compare_ssim as get_ssim
 
 from utils.image_utils import imwrite
 from utils.flow_utils import bilinear_interp, bi_interp, to_there, forward_warp, meshgrid, prop_refine_rd, prop_refine_which
@@ -39,7 +39,7 @@ torch.cuda.set_device(devices[0])
 
 handle_size = 256
 Max_steps = 10000000
-batch_size = 3
+batch_size = 8
 keep_training = True
 show_img_gap = 200
 best_psnr = 0
@@ -86,14 +86,14 @@ if args.pretrained == "True":
     print("Load trained Net...")
     coding.load_state_dict(torch.load('coding.pkl'))
     improc.load_state_dict(torch.load('improc.pkl'))
-    best_psnr = torch.load('best_psnr.pkl')
+#     best_psnr = torch.load('best_psnr.pkl')
     print("Loaded")
 
 reg = 10
 cross_entory = torch.nn.CrossEntropyLoss()
 criterion = torch.nn.L1Loss()
 c2 = torch.nn.MSELoss()
-lr = 0.00001
+lr = 0.000005
 optimizer = optim.Adam(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5)
 tvLoss = TVLoss()
 
@@ -461,6 +461,16 @@ def visual_flow(flow, batch_size):
             show_flow = np.concatenate((show_flow, flowimg), 0)
     return show_flow
 
+def get_psnr_ssim(out, tar):
+    out = (out.clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
+    tar = (tar.data.cpu().numpy()*255.0).astype(numpy.uint8)
+    tar = img_as_float(np.array(tar))
+    out = img_as_float(np.array(out))
+    psnr = 10*np.log10(1.0/np.square(np.subtract(np.array(out), np.array(tar))).mean())
+    tar = tar.transpose(1, 2, 0)
+    out = out.transpose(1, 2, 0)
+    ssim = get_ssim(tar, out, data_range=out.max() - out.min(), multichannel=True)
+    return psnr, ssim
 
 def test(normal=1, writer=None, skip_num=1):
     
@@ -472,16 +482,22 @@ def test(normal=1, writer=None, skip_num=1):
     
     vimeos_data_list_path = "data_list/sep_testlist.txt"
 
-    VIMEOS_PATH_BASE = '/home/ubuntu/data/vimeo/vimeo_septuplet/sequences/'
+    VIMEOS_PATH_BASE_SR = '/home/ubuntu/data/vimeo/vimeo_septuplet/sequences/'
+    VIMEOS_PATH_BASE = '/home/ubuntu/data/vimeo/vimeo_super_resolution_test/low_resolution/'
 
     vimeos_dataset_frames = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE)
+    vimeos_dataset_frames_sr = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE_SR)
 
     data_list = vimeos_dataset_frames.read_data_list_file()
-    seed_key = time.time()
+    data_list_sr = vimeos_dataset_frames_sr.read_data_list_file()
+    
+    ## no need in the testing phase
+#     seed_key = time.time()
 #     random.seed(seed_key)
 #     shuffle(data_list)
+#     shuffle(data_list_sr)
 
-    batch_size = 4
+    batch_size = 16
     data_size = len(data_list)
     epoch_num = int(data_size / batch_size)
     croptimes = 6
@@ -491,55 +507,77 @@ def test(normal=1, writer=None, skip_num=1):
     SSIM = 0
     psnr_a = 0
     ssim_a = 0
-#     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
+    down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
 #     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
+
+    ## TESTING PHASE
     with torch.no_grad():
-    #     softmax = nn.LogSoftmax(dim=1)
         t = tqdm(range(data_size//batch_size), desc='loop')
         for step in t:
+            ## if little test then skip
+            if step % skip_num != 0:
+                continue
+                
             batch_idx = step % epoch_num
             epoch_idx = step / epoch_num
 
+            ## DATA READING
             batch_data_list_frames = []
+            batch_data_list_frames_sr = []
             batch_data_list = data_list[int(batch_idx * batch_size) : int((batch_idx + 1) * batch_size)]
+            batch_data_list_sr = data_list_sr[int(batch_idx * batch_size) : int((batch_idx + 1) * batch_size)]
             unit_size = 7
-
+            
             for i in range(1, unit_size + 1):
                 batch_data_list_frames.append(list(map(lambda e : e + '/im' + str(i) + '.png', batch_data_list)))
+                batch_data_list_frames_sr.append(list(map(lambda e : e + '/im' + str(i) + '.png', batch_data_list_sr)))
             img = PIL.Image.open(batch_data_list_frames[0][0])
+            img = PIL.Image.open(batch_data_list_frames_sr[0][0])
 
             size_h, size_w = img.size
             min_len = min(size_h, size_w)
             rate = min_len / (handle_size + 120)
             ori_w = size_h #int(np.floor(size_h / rate))#720  #1080
             ori_h = size_w #int(np.floor(size_w / rate))#1280 #1920
+            
             # Load batch data.
             batch_data_frames = []
+            batch_data_frames_sr = []
             for i in range(0, unit_size):
                 batch_data_frames.append(
                     torch.FloatTensor(np.array(
                             [numpy.rollaxis(numpy.asarray(
-                                PIL.Image.open(line).resize((ori_w,ori_h)))[:,:,::-1], 2, 0).astype(numpy.float32) 
+                                PIL.Image.open(line))[:,:,::-1], 2, 0).astype(numpy.float32) 
                              for line in batch_data_list_frames[i]]) / 255.0))
+                batch_data_frames_sr.append(
+                    torch.FloatTensor(np.array(
+                            [numpy.rollaxis(numpy.asarray(
+                                PIL.Image.open(line))[:,:,::-1], 2, 0).astype(numpy.float32) 
+                             for line in batch_data_list_frames_sr[i]]) / 255.0))
 
             in_frames = batch_data_frames[0] 
+            in_frames_sr = batch_data_frames_sr[0] 
             for i in range(1, unit_size):
                 in_frames = torch.cat((in_frames, batch_data_frames[i]), 1)#[:,:,crop_idx_x:crop_idx_x+handle_size, crop_idx_y:crop_idx_y+handle_size]
+                in_frames_sr = torch.cat((in_frames_sr, batch_data_frames_sr[i]), 1)
+                
             in_frames = in_frames.cuda(devices[0])
+            in_frames_sr = in_frames_sr.cuda(devices[0])
 
-            invar_sr = torch.autograd.Variable(in_frames)
-            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_sr, scale_factor=0.5, mode='bilinear'),
-                                                   scale_factor=2, mode='bilinear')
-    #             input_var = torch.autograd.Variable(torch.cat((invar[:,0:3], invar[:,6:9]), 1))
-    #             target_var = torch.autograd.Variable(invar_sr[:,3:6])
+            invar_lr = torch.autograd.Variable(in_frames)
+            invar_sr = torch.autograd.Variable(in_frames_sr)
+#             invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(down_sampling(down_sampling(invar_sr)),
+            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_lr,
+                                                   scale_factor=2, mode='bilinear',align_corners=False), 
+                                                   scale_factor=2, mode='bilinear',align_corners=False)
             l0_size = handle_size
-
             loss = 0
             inter_loss = 0
             tvl = 0
             improc_loss = 0
             output_cat = None
 
+            ## FEED MODLE
             pair_index_list = [(0, 6), (1, 5), (2, 4)]
             tar_i = 3
             f05_sr = invar_sr[:, tar_i*3:tar_i*3+3]
@@ -551,9 +589,6 @@ def test(normal=1, writer=None, skip_num=1):
                 f1_i = pair_index[1]
                 f0 = invar[:,f0_i*3:f0_i*3+3]
                 f1 = invar[:,f1_i*3:f1_i*3+3]
-    #             f0 = pad_x(input_var[:,0:3], 2)
-    #             f1 = pad_x(input_var[:,3:6], 2)
-    #             f05 = pad_x(target_var, 2)
 
                 input_var = torch.cat((f0, f1), 1)
                 out = coding(input_var)
@@ -573,60 +608,51 @@ def test(normal=1, writer=None, skip_num=1):
                 else:
                     output_cat = torch.cat((output_cat, output), 1)
 
-                ## loss term 
-                tvl += tvLoss(flowt0)+ tvLoss(flowt1)
-                inter_loss += criterion(output, f05_sr)
-
             final_output = improc(output_cat) 
-            improc_loss += criterion(final_output, f05_sr)
-
             output = final_output
 
+            
+            ## COMPUTER PSNR SSIM and SAVE RESULT
             for img in range(0, batch_size):
-                store_base = './super-inter-test-nbn/'
-                PIL.Image.fromarray((output[img].cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(step*batch_size+img) + 'im4-si.png')         
-                out = (final_output[img].clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
-                tar = (target_var[img].data.cpu().numpy()*255.0).astype(numpy.uint8)
-                tar = img_as_float(np.array(tar))
-                out = img_as_float(np.array(out))
-                psnr_a += 10*np.log10(1.0/np.square(np.subtract(np.array(out), np.array(tar))).mean())
-                tar = tar.transpose(1, 2, 0)
-                out = out.transpose(1, 2, 0)
-                ssim_a += ssim(tar, out, data_range=out.max() - out.min(), multichannel=True)
+                if skip_num == 1:
+                    ## save result picture
+                    store_base = './super-inter-test-nbn/'
+                    PIL.Image.fromarray((output[img].cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(step*batch_size+img) + 'im4-si.png')         
+                
+                ## get psnr ssim
+                psnr_tmp, ssim_tmp = get_psnr_ssim(final_output[img], target_var[img])
+                psnr_a += psnr_tmp
+                ssim_a += ssim_tmp
 
-            frame2 = (numpy.rollaxis(target_var[0].clamp(0.0, 1.0).cpu().detach().numpy(), 0, 3)[:,:,::-1] * 255.0).astype(numpy.uint8)
-            out = (numpy.rollaxis(output[0].clamp(0.0, 1.0).cpu().detach().numpy(), 0, 3)[:,:,::-1] * 255.0).astype(numpy.uint8)
-    #         out = PIL.Image.fromarray(out).resize(ori_size)
-    #         frame1 = frame1.resize(ori_size)
+            ## update progress bar
             cnt += 1
-    #     PSNR += 10*np.log10(255.0*255.0/(np.sum(np.square(out-Tar))/(batch_size*3*256*256)))
-#             print("Overall PSNR: %f db" % (psnr_a/(cnt*batch_size)))
-#             print("Overall SSIM: %f db" % (ssim_a/(cnt*batch_size)))
             t.set_description('psnr: %g ssim: %g' % ((psnr_a/(cnt*batch_size)), (ssim_a/(cnt*batch_size))))
-            if have_f2 == True:
-                tar = img_as_float(np.array(frame2))
-                ou = img_as_float(np.array(out))
-                PSNR += 10*np.log10(1.0/np.square(np.subtract(np.array(ou), np.array(tar))).mean())
-                SSIM += ssim(tar, ou, data_range=ou.max() - ou.min(), multichannel=True)
+            
+            ## show sample result on tensorboard
             if cnt % 100 == 0: 
                 show_flow = visual_flow(flowt0, batch_size)
                 writer.add_image('Test_Image/flow', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True)), real_step + cnt)
-                writer.add_image('Test_Image/in1', show(vutils.make_grid(input_var[:, 0:3].cpu(), normalize=True, scale_each=True)), real_step + cnt)
-                writer.add_image('Test_Image/in2', show(vutils.make_grid(input_var[:, 3:6].cpu(), normalize=True, scale_each=True)),real_step + cnt)
-                writer.add_image('Test_Image/out_a', show(vutils.make_grid(final_output.data.cpu(), normalize=True, scale_each=True)), real_step + cnt)
-                writer.add_image('Test_Image/target', show(vutils.make_grid(target_var.data.cpu(), normalize=True, scale_each=True)), real_step + cnt)
+                writer.add_image('Test_Image/in1', show(vutils.make_grid(input_var[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step + cnt)
+                writer.add_image('Test_Image/in2', show(vutils.make_grid(input_var[:, 3:6].cpu(), normalize=False, scale_each=True)),real_step + cnt)
+                writer.add_image('Test_Image/out_a', show(vutils.make_grid(final_output.data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
+                writer.add_image('Test_Image/target', show(vutils.make_grid(target_var.data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
         
-    print("Overall ssim:", (ssim_a/(cnt*batch_size)))
-    print("Overall PSNR: %f db" % (psnr_a/(cnt*batch_size)))
+    ## show result in terminal
+    final_ssim = ssim_a / (cnt*batch_size) 
+    final_psnr = psnr_a / (cnt*batch_size)
+    print("Overall ssim:", final_ssim)
+    print("Overall PSNR: %f db" % final_psnr)
     print("cnt", cnt)
+    
+    ## record score in tensorboard
     if skip_num > 1:
-        writer.add_scalar('ssim_test_f', (SSIM / cnt), real_step)
-        writer.add_scalar('psnr_test_f', (PSNR / cnt), real_step)
+        writer.add_scalar('ssim_test_f', final_ssim, real_step)
+        writer.add_scalar('psnr_test_f', final_psnr, real_step)
     else:
-        writer.add_scalar('ssim_test', (ssim_a/(cnt*batch_size)), real_step)
-        writer.add_scalar('psnr_test', (psnr_a/(cnt*batch_size)), real_step)
-    coding.train()
-    return (psnr_a/(cnt*batch_size))
+        writer.add_scalar('ssim_test', final_ssim, real_step)
+        writer.add_scalar('psnr_test', final_psnr, real_step)
+        
+    return final_psnr, final_ssim 
 
 
 
@@ -639,9 +665,9 @@ if args.mode == "train":
     vimeos_dataset_frames = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE)
 
     data_list = vimeos_dataset_frames.read_data_list_file()
-#     seed_key = time.time()
-#     random.seed(seed_key)
-#     shuffle(data_list)
+    seed_key = time.time()
+    random.seed(seed_key)
+    shuffle(data_list)
 
 
     data_size = len(data_list)
@@ -649,7 +675,7 @@ if args.mode == "train":
     croptimes = 1
     writer = SummaryWriter()
 
-#     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
+    down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
 #     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
 #     softmax = nn.LogSoftmax(dim=1)
 
@@ -659,9 +685,9 @@ if args.mode == "train":
 
         if batch_idx == 0 and step != 0:
         # Shuffle data at each epoch.
-#             seed_key = time.time()
-#             random.seed(seed_key)
-#             shuffle(data_list)
+            seed_key = time.time()
+            random.seed(seed_key)
+            shuffle(data_list)
             print("Shuffled data!")
             print('Epoch Number: %d' % int(real_step / epoch_num))
 
@@ -703,8 +729,9 @@ if args.mode == "train":
             in_frames = in_frames.cuda(devices[0])
 
             invar_sr = torch.autograd.Variable(in_frames)
-            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_sr, scale_factor=0.5, mode='bilinear'),
-                                                   scale_factor=2, mode='bilinear')
+            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(down_sampling(down_sampling(invar_sr)),
+                                                   scale_factor=2, mode='bilinear',align_corners=False), 
+                                                   scale_factor=2, mode='bilinear',align_corners=False)
 #             input_var = torch.autograd.Variable(torch.cat((invar[:,0:3], invar[:,6:9]), 1))
 #             target_var = torch.autograd.Variable(invar_sr[:,3:6])
             l0_size = handle_size
@@ -760,6 +787,10 @@ if args.mode == "train":
             
             loss +=  1 * inter_loss + 10 * improc_loss #+ 2 * tvl
                                  
+            # should be smooth but not smooth in detail
+            if tvl > 0.1 :
+                loss += 2 * tvl
+      
             loss.backward()
             optimizer.step()
 
@@ -788,9 +819,10 @@ if args.mode == "train":
                 writer.add_scalar('inter_loss', inter_loss.data, real_step)
                 writer.add_scalar('improc_loss', improc_loss.data, real_step)
 
-            if real_step % 3000 == 0 and real_step > 10:
+            epoch_now = real_step / (epoch_num*1.0)
+            if real_step % 5000 == 0 and real_step > 10:# and epoch_num > 2:
                 print("Test!")
-                now_psnr = test(0, writer, 1)
+                now_psnr, now_ssim = test(0, writer, 1)
                 print("Test end.")
                 
                 if now_psnr > best_psnr:
@@ -798,14 +830,15 @@ if args.mode == "train":
                     torch.save(coding.state_dict(), 'best_coding.pkl')
                     torch.save(improc.state_dict(), 'best_improc.pkl')
                     torch.save(best_psnr, 'best_psnr.pkl')
+                    torch.save(now_ssim, 'now_ssim.pkl')
                     
                 coding.train()
                 improc.train()
                 
-            if real_step % 300 == 0 and real_step > 10:
-#                 print("little Test!")
-#                 test(0, writer, 50)
-#                 print("Test end.")
+            if real_step % 1000 == 0 and real_step > 10:
+                print("little Test!")
+                test(0, writer, 50)
+                print("Test end.")
                 
                     
                 torch.save(coding.state_dict(), 'coding.pkl')
@@ -839,4 +872,4 @@ if args.mode == "train":
                     writer.add_image('Image/target', show(vutils.make_grid(target_var.data.cpu(), normalize=True, scale_each=True)), real_step)
 
 if args.mode == "test":
-    test(1, None)
+    test(1, None, 50)
