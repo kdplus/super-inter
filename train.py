@@ -489,6 +489,7 @@ def test(normal=1, writer=None, skip_num=1):
     vimeos_dataset_frames_sr = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE_SR)
 
     data_list = vimeos_dataset_frames.read_data_list_file()
+<<<<<<< HEAD
     data_list_sr = vimeos_dataset_frames_sr.read_data_list_file()
     
     ## no need in the testing phase
@@ -496,6 +497,11 @@ def test(normal=1, writer=None, skip_num=1):
 #     random.seed(seed_key)
 #     shuffle(data_list)
 #     shuffle(data_list_sr)
+=======
+    seed_key = time.time()
+    random.seed(seed_key)
+    shuffle(data_list)
+>>>>>>> 8ec02cf60a7dec860aad9ae21cb7c6a461d274df
 
     batch_size = 16
     data_size = len(data_list)
@@ -514,10 +520,15 @@ def test(normal=1, writer=None, skip_num=1):
     with torch.no_grad():
         t = tqdm(range(data_size//batch_size), desc='loop')
         for step in t:
+<<<<<<< HEAD
             ## if little test then skip
             if step % skip_num != 0:
                 continue
                 
+=======
+            if step % skip_num != 0:
+                continue            
+>>>>>>> 8ec02cf60a7dec860aad9ae21cb7c6a461d274df
             batch_idx = step % epoch_num
             epoch_idx = step / epoch_num
 
@@ -820,7 +831,11 @@ if args.mode == "train":
                 writer.add_scalar('improc_loss', improc_loss.data, real_step)
 
             epoch_now = real_step / (epoch_num*1.0)
+<<<<<<< HEAD
             if real_step % 5000 == 0 and real_step > 10:# and epoch_num > 2:
+=======
+            if real_step % 5000 == 0 and real_step > 10 and epoch_num > 5:
+>>>>>>> 8ec02cf60a7dec860aad9ae21cb7c6a461d274df
                 print("Test!")
                 now_psnr, now_ssim = test(0, writer, 1)
                 print("Test end.")
