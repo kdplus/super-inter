@@ -191,6 +191,93 @@ class Network(torch.nn.Module):
         return variableUpsample1
 
     
+# class SharpNet(torch.nn.Module):
+#     def __init__(self, in_c, out_c):
+#         super(SharpNet, self).__init__()
+
+#         def Basic(intInput, intOutput):
+#             return torch.nn.Sequential(
+#                 torch.nn.Conv2d(in_channels=intInput, out_channels=intOutput, kernel_size=3, stride=2, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+# #                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+# #                 nn.LeakyReLU(0.2, inplace=True),
+# #                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+# #                 nn.LeakyReLU(0.2, inplace=True),
+#                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#             )
+
+#         self.C0 = torch.nn.Conv2d(in_channels=in_c, out_channels=32, kernel_size=5, stride=1, padding=2)
+        
+#         self.D1 = torch.nn.Sequential(
+#                 torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#                 torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+# #                 torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+# #                 nn.LeakyReLU(0.2, inplace=True),
+#         )
+#         self.D2 = Basic(128, 256)
+#         self.D3 = Basic(256, 256)
+#         self.U1 = torch.nn.ConvTranspose2d(in_channels=256, out_channels=256, kernel_size=4, stride=2, padding=1)
+#         self.C4 = torch.nn.Sequential(
+#                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+# #                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+# #                 nn.LeakyReLU(0.2, inplace=True),
+#         )
+#         self.U2 = torch.nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1)
+#         self.C5 = torch.nn.Sequential(
+#                 torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#                 torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#         )
+#         self.U3 = torch.nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
+#         self.C6 = torch.nn.Sequential(
+#                 torch.nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+#                 nn.LeakyReLU(0.2, inplace=True),
+#                 torch.nn.Conv2d(in_channels=32, out_channels=out_c, kernel_size=3, stride=1, padding=1),
+#         )
+
+#         for m in self.modules():
+# #             if isinstance(m, nn.Conv2d):
+# #                 if m.bias is not None:
+# #                     nn.init.uniform_(m.bias)
+# #                 nn.init.kaiming_uniform_(m.weight)
+#             if isinstance(m, nn.Conv2d):
+#                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+#                 m.weight.data.normal_(0, math.sqrt(2. / n))
+#                 if m.bias is not None:
+#                     m.bias.data.zero_()
+
+#             if isinstance(m, nn.ConvTranspose2d):
+#                 if m.bias is not None:
+#                     nn.init.uniform_(m.bias)
+#                 nn.init.kaiming_uniform_(m.weight)
+#                 # init_deconv_bilinear(m.weight)
+
+#     def forward(self, vin):
+#         vC0 = self.C0(vin)
+#         vD1 = self.D1(vC0)
+#         vD2 = self.D2(vD1)
+#         vD3 = self.D3(vD2)
+        
+#         vU1 = self.U1(vD3)
+#         vC4 = self.C4(vU1)# + vD2)
+        
+#         vU2 = self.U2(vC4)
+#         vC5 = self.C5(vU2)# + vD1)
+        
+#         vU3 = self.U3(vC5)
+#         vC6 = self.C6(vU3)
+        
+#         #return vin[:,3:6] + vC6
+#         return vC6
+
+
 class SharpNet(torch.nn.Module):
     def __init__(self, in_c, out_c):
         super(SharpNet, self).__init__()
@@ -262,12 +349,120 @@ class SharpNet(torch.nn.Module):
         self.U3 = torch.nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
         self.C6 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=64, out_channels=56, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=56, momentum=0.5),
-#                 nn.InstanceNorm2d(56, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=56, out_channels=5, kernel_size=3, stride=1, padding=1),
+        )
+        self.C6_2 = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=64, out_channels=56, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=56, out_channels=5, kernel_size=3, stride=1, padding=1),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                if m.bias is not None:
+                    nn.init.uniform_(m.bias)
+                nn.init.kaiming_uniform_(m.weight)
+
+            if isinstance(m, nn.ConvTranspose2d):
+                if m.bias is not None:
+                    nn.init.uniform_(m.bias)
+                nn.init.kaiming_uniform_(m.weight)
+                # init_deconv_bilinear(m.weight)
+
+    def forward(self, vin):
+        vC0 = self.C0(vin)
+        vD1 = self.D1(vC0)
+        vD2 = self.D2(vD1)
+        vD3 = self.D3(vD2)
+        
+        vU1 = self.U1(vD3)
+        vC4 = self.C4(vU1 + vD2)
+        
+        vU2 = self.U2(vC4)
+        vC5 = self.C5(vU2 + vD1)
+        
+        vU3 = self.U3(vC5)
+        vC6 = self.C6(vU3)
+        vC6_2 = self.C6_2(vU3)
+        
+        #return vin[:,3:6] + vC6
+        return torch.cat((vC6, vC6_2), 1)
+
+    
+class OLDSharpNet(torch.nn.Module):
+    def __init__(self, in_c, out_c):
+        super(OLDSharpNet, self).__init__()
+
+        def Basic(intInput, intOutput):
+            return torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=intInput, out_channels=intOutput, kernel_size=3, stride=2, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
+#                 nn.InstanceNorm2d(intOutput, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
+#                 nn.InstanceNorm2d(intOutput, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
+#                 nn.InstanceNorm2d(intOutput, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
+#                 nn.InstanceNorm2d(intOutput, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+
+        self.C0 = torch.nn.Conv2d(in_channels=in_c, out_channels=128, kernel_size=5, stride=1, padding=2)
+        
+        self.D1 = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=2, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=64, momentum=0.5),
+#                 nn.InstanceNorm2d(64, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
+#                 nn.InstanceNorm2d(128, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
+#                 nn.InstanceNorm2d(128, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.D2 = Basic(128, 256)
+        self.D3 = Basic(256, 512)
+        self.U1 = torch.nn.ConvTranspose2d(in_channels=512, out_channels=256, kernel_size=4, stride=2, padding=1)
+        self.C4 = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
+#                 nn.InstanceNorm2d(256, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
+#                 nn.InstanceNorm2d(256, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
+#                 nn.InstanceNorm2d(256, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.U2 = torch.nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1)
+        self.C5 = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
+#                 nn.InstanceNorm2d(128, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+                torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+#                 torch.nn.BatchNorm2d(num_features=64, momentum=0.5),
+#                 nn.InstanceNorm2d(64, affine=True),
+                nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.U3 = torch.nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
+        self.C6 = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels=64, out_channels=56, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=56, out_channels=out_c, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
-#                nn.LeakyReLU(0.2, inplace=True),
         )
 
         for m in self.modules():
@@ -298,9 +493,7 @@ class SharpNet(torch.nn.Module):
         vC6 = self.C6(vU3)
         
         #return vin[:,3:6] + vC6
-        return vC6
-
-    
+        return vC6 
     
 
 class _Residual_Block(nn.Module):
