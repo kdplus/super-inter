@@ -4,7 +4,7 @@ from __future__ import print_function
 
 import numpy
 import torch
-import torch.utils.serialization
+# import torch.utils.serialization
 
 
 def l1_loss(predictions, targets):

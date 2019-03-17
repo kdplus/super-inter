@@ -2,7 +2,6 @@ import sys
 import getopt
 import math
 import torch
-import torch.utils.serialization
 import PIL
 import PIL.Image
 import torch.nn as nn
@@ -33,7 +32,7 @@ from utils.loss_utils import TVLoss
 
 from model import Pyramid, Network, SharpNet, _NetG, Improc
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1' # change this if you have a multiple graphics cards and you want to utilize them
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' # change this if you have a multiple graphics cards and you want to utilize them
 torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
 devices = [0]
 torch.cuda.set_device(devices[0])
@@ -85,8 +84,8 @@ improc.train()
 
 if args.pretrained == "True":
     print("Load trained Net...")
-    coding.load_state_dict(torch.load('best_coding.pkl'))
-    improc.load_state_dict(torch.load('best_improc.pkl'))
+    coding.load_state_dict(torch.load('coding.pkl'))
+    improc.load_state_dict(torch.load('improc.pkl'))
     best_psnr = torch.load('best_psnr.pkl')
     print("Loaded")
 
@@ -473,7 +472,7 @@ def test(normal=1, writer=None, skip_num=1):
     
     vimeos_data_list_path = "data_list/sep_testlist.txt"
 
-    VIMEOS_PATH_BASE = '/data/wyuxi/vimeo/vimeo_septuplet/sequences/'
+    VIMEOS_PATH_BASE = '/home/ubuntu/data/vimeo/vimeo_septuplet/sequences/'
 
     vimeos_dataset_frames = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE)
 
@@ -492,8 +491,8 @@ def test(normal=1, writer=None, skip_num=1):
     SSIM = 0
     psnr_a = 0
     ssim_a = 0
-    down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
-    up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
+#     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
+#     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
     with torch.no_grad():
     #     softmax = nn.LogSoftmax(dim=1)
         t = tqdm(range(data_size//batch_size), desc='loop')
@@ -529,7 +528,8 @@ def test(normal=1, writer=None, skip_num=1):
             in_frames = in_frames.cuda(devices[0])
 
             invar_sr = torch.autograd.Variable(in_frames)
-            invar = up_sampling(up_sampling(down_sampling(down_sampling(invar_sr))))
+            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_sr, scale_factor=0.5, mode='bilinear'),
+                                                   scale_factor=2, mode='bilinear')
     #             input_var = torch.autograd.Variable(torch.cat((invar[:,0:3], invar[:,6:9]), 1))
     #             target_var = torch.autograd.Variable(invar_sr[:,3:6])
             l0_size = handle_size
@@ -583,7 +583,7 @@ def test(normal=1, writer=None, skip_num=1):
             output = final_output
 
             for img in range(0, batch_size):
-                store_base = '/mnt/fin3/wyuxi/super-inter-test-nbn/'
+                store_base = './super-inter-test-nbn/'
                 PIL.Image.fromarray((output[img].cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(step*batch_size+img) + 'im4-si.png')         
                 out = (final_output[img].clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
                 tar = (target_var[img].data.cpu().numpy()*255.0).astype(numpy.uint8)
@@ -634,14 +634,14 @@ if args.mode == "train":
 # Load data
     vimeos_data_list_path = "data_list/sep_trainlist.txt"
 
-    VIMEOS_PATH_BASE = '/data/wyuxi/vimeo/vimeo_septuplet/sequences/'
+    VIMEOS_PATH_BASE = '/home/ubuntu/data/vimeo/vimeo_septuplet/sequences/'
 
     vimeos_dataset_frames = dataset.Dataset(vimeos_data_list_path, DATA_PATH_BASE=VIMEOS_PATH_BASE)
 
     data_list = vimeos_dataset_frames.read_data_list_file()
-    seed_key = time.time()
-    random.seed(seed_key)
-    shuffle(data_list)
+#     seed_key = time.time()
+#     random.seed(seed_key)
+#     shuffle(data_list)
 
 
     data_size = len(data_list)
@@ -649,8 +649,8 @@ if args.mode == "train":
     croptimes = 1
     writer = SummaryWriter()
 
-    down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
-    up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
+#     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
+#     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
 #     softmax = nn.LogSoftmax(dim=1)
 
     for step in range(0, Max_steps):
@@ -659,9 +659,9 @@ if args.mode == "train":
 
         if batch_idx == 0 and step != 0:
         # Shuffle data at each epoch.
-            seed_key = time.time()
-            random.seed(seed_key)
-            shuffle(data_list)
+#             seed_key = time.time()
+#             random.seed(seed_key)
+#             shuffle(data_list)
             print("Shuffled data!")
             print('Epoch Number: %d' % int(real_step / epoch_num))
 
@@ -703,7 +703,8 @@ if args.mode == "train":
             in_frames = in_frames.cuda(devices[0])
 
             invar_sr = torch.autograd.Variable(in_frames)
-            invar = up_sampling(up_sampling(down_sampling(down_sampling(invar_sr))))
+            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_sr, scale_factor=0.5, mode='bilinear'),
+                                                   scale_factor=2, mode='bilinear')
 #             input_var = torch.autograd.Variable(torch.cat((invar[:,0:3], invar[:,6:9]), 1))
 #             target_var = torch.autograd.Variable(invar_sr[:,3:6])
             l0_size = handle_size
