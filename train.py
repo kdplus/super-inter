@@ -106,8 +106,8 @@ def perception_loss(out, tar):
 
 if args.pretrained == "True":
     print("Load trained Net...")
-    coding.load_state_dict(torch.load('finetune_coding.pkl'))
-    improc.load_state_dict(torch.load('finetune_improc.pkl'))
+    coding.load_state_dict(torch.load('coding.pkl'))
+    improc.load_state_dict(torch.load('improc.pkl'))
     best_psnr = torch.load('best_psnr.pkl')
     print("Loaded")
 
@@ -120,21 +120,21 @@ c2 = torch.nn.MSELoss()
 # lr = 0.000005
 # optimizer = optim.Adam(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5)
 optimizer = optim.Adam(
-    [
-        {"params": coding.module.C0.parameters()},
-        {"params": coding.module.C4.parameters()},
-        {"params": coding.module.D1.parameters()},
-        {"params": coding.module.D2.parameters()},
-        {"params": coding.module.D3.parameters()},
-        {"params": coding.module.U1.parameters()},
-        {"params": coding.module.U2.parameters()},
-        {"params": coding.module.C5.parameters()},
-        {"params": coding.module.U3.parameters()},
-        {"params": coding.module.C6.parameters()},
-        {"params": coding.module.C6_2.parameters(), "lr": 3e-4},
-        {"params": improc.parameters(), "lr": 3e-6},
-    ],
-    lr=lr,
+[
+    {"params": coding.module.C0.parameters()},
+    {"params": coding.module.C4.parameters()},
+    {"params": coding.module.D1.parameters()},
+    {"params": coding.module.D2.parameters()},
+    {"params": coding.module.D3.parameters()},
+    {"params": coding.module.U1.parameters()},
+    {"params": coding.module.U2.parameters()},
+    {"params": coding.module.C5.parameters()},
+    {"params": coding.module.U3.parameters()},
+    {"params": coding.module.C6.parameters()},
+    {"params": coding.module.C6_2.parameters()},
+    {"params": improc.parameters()},
+],
+lr=lr,
 )
 # optimizer = optim.SGD(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5,  momentum=0.9)
 # optimizer = adabound.AdaBound(list(coding.parameters())+list(improc.parameters()), lr=1e-4, final_lr=0.1)
@@ -554,6 +554,8 @@ def test(normal=1, writer=None, skip_num=1):
     PSNR = 0
     SSIM = 0
     psnr_a = 0
+    psnr_given = 0
+    psnr_middle = 0
     ssim_a = 0
     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
 #     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
@@ -626,7 +628,12 @@ def test(normal=1, writer=None, skip_num=1):
             output_cat = None
 
             ## FEED MODLE
-            pair_index_list = [(0, 2), (2, 4), (4, 6)]
+            if normal == 1:
+                pair_index_list = [(0, 2), (2, 4), (4, 6)]
+            elif normal == 2 :
+                pair_index_list = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+                
+    
             
             ## for display
             input_var = torch.cat((invar[:,0:3], invar[:,6*3:6*3+3]), 1)
@@ -684,7 +691,8 @@ def test(normal=1, writer=None, skip_num=1):
                     SR_list.append(f0_ret)
                 
                 SR_ret = f1_ret
-                SR_list.append(f05_ret)
+                if normal == 1:
+                    SR_list.append(f05_ret)
                 SR_list.append(f1_ret)
                 
             
@@ -702,35 +710,57 @@ def test(normal=1, writer=None, skip_num=1):
                     psnr_tmp, ssim_tmp = get_psnr_ssim(final_output[img], target_var[img])
                     psnr_a += psnr_tmp
                     ssim_a += ssim_tmp
+                    if ind % 2 == 1:
+                        psnr_middle += psnr_tmp
+                    else:
+                        psnr_given += psnr_tmp
 
             ## update progress bar
             cnt += 1
             t.set_description('psnr: %g ssim: %g' % ((psnr_a/(cnt*batch_size*7)), (ssim_a/(cnt*batch_size*7))))
             
             ## show sample result on tensorboard
-            if cnt % 100 == 0: 
+            if cnt % 20 == 0 and normal == 2 or cnt % 100 : 
                 show_flow = visual_flow(flowt0, batch_size)
                 writer.add_image('Test_Image/flow', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True)), real_step + cnt)
                 writer.add_image('Test_Image/in1', show(vutils.make_grid(input_var[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step + cnt)
                 writer.add_image('Test_Image/in2', show(vutils.make_grid(input_var[:, 3:6].cpu(), normalize=False, scale_each=True)),real_step + cnt)
+                prefix = 'Test_Image'
+                if normal == 2:
+                    prefix = 'SR_image'
                 for ind in range(0, 7):
-                    writer.add_image('Test_Image/out_a'+str(ind), show(vutils.make_grid(SR_list[3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
-                    writer.add_image('Test_Image/target'+str(ind), show(vutils.make_grid(invar_sr[:, 9:12].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
+                    writer.add_image(prefix + '/out_a'+str(ind), show(vutils.make_grid(SR_list[ind].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
+                    writer.add_image(prefix + '/target'+str(ind), show(vutils.make_grid(invar_sr[:, ind*3:ind*3+3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
         
     ## show result in terminal
     final_ssim = ssim_a / (cnt*batch_size*7) 
     final_psnr = psnr_a / (cnt*batch_size*7)
+    final_psnr_given = psnr_given / (cnt*batch_size*4)
+    final_psnr_middle = psnr_middle / (cnt*batch_size*3)
     print("Overall ssim:", final_ssim)
-    print("Overall PSNR: %f db" % final_psnr)
+    print("Overall PSNR: %f db, given %f db, middle %f db" % (final_psnr, final_psnr_given, final_psnr_middle))
     print("cnt", cnt)
     
     ## record score in tensorboard
     if skip_num > 1:
-        writer.add_scalar('ssim_test_f', final_ssim, real_step)
-        writer.add_scalar('psnr_test_f', final_psnr, real_step)
+        if normal == 1:
+            writer.add_scalar('ssim_test_f', final_ssim, real_step)
+            writer.add_scalar('psnr_test_f', final_psnr, real_step)
+            writer.add_scalar('psnr_test_given_f', final_psnr_given, real_step)
+            writer.add_scalar('psnr_test_middle_f', final_psnr_middle, real_step)
+        elif normal == 2 :
+            writer.add_scalar('ssim_sr_f', final_ssim, real_step)
+            writer.add_scalar('psnr_sr_f', final_psnr, real_step)
+            
     else:
-        writer.add_scalar('ssim_test', final_ssim, real_step)
-        writer.add_scalar('psnr_test', final_psnr, real_step)
+        if normal == 1:
+            writer.add_scalar('ssim_test', final_ssim, real_step)
+            writer.add_scalar('psnr_test', final_psnr, real_step)
+            writer.add_scalar('psnr_test_given', final_psnr_given, real_step)
+            writer.add_scalar('psnr_test_middle', final_psnr_middle, real_step)
+        elif normal == 2 :
+            writer.add_scalar('ssim_sr_f', final_ssim, real_step)
+            writer.add_scalar('psnr_sr_f', final_psnr, real_step)
         
     return final_psnr, final_ssim 
 
@@ -845,8 +875,8 @@ if args.mode == "train":
                         {"params": coding.module.C5.parameters()},
                         {"params": coding.module.U3.parameters()},
                         {"params": coding.module.C6.parameters()},
-                        {"params": coding.module.C6_2.parameters(), "lr": 3e-4},
-                        {"params": improc.parameters(), "lr": 3e-6},
+                        {"params": coding.module.C6_2.parameters()},
+                        {"params": improc.parameters()},
                     ],
                     lr=lr,
                 )
@@ -961,7 +991,7 @@ if args.mode == "train":
                 sim_loss += criterion(flow1t, flowt0.detach()) + criterion(flow0t, flowt1.detach())
 
             
-            loss +=  0.05 * inter_loss + 0.05 * sr_loss + 0.002 * flow_loss + 0.05 * per_loss
+            loss +=  0.05 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss
             
             loss += sim_on * sim_loss
                                  
@@ -1010,7 +1040,8 @@ if args.mode == "train":
             epoch_now = real_step / (epoch_num*1.0)
             if real_step % b_test_gap == 0 and real_step > 10:# and epoch_num > 2:
                 print("Test!")
-                now_psnr, now_ssim = test(0, writer, 1)
+                now_psnr, now_ssim = test(1, writer, 1)
+                _, _ = test(2, writer, 1)
                 print("Test end.")
                 
                 if now_psnr > best_psnr:
@@ -1025,7 +1056,8 @@ if args.mode == "train":
                 
             if real_step % s_test_gap == 0 and real_step > 10:
                 print("little Test!")
-                test(0, writer, 50)
+                test(1, writer, 25)
+                test(2, writer, 25)
                 print("Test end.")
                 
                     
@@ -1068,4 +1100,5 @@ if args.mode == "train":
                         writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*tar_ind:3*tar_ind + 3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
 
 if args.mode == "test":
-    test(1, None, 50)
+    test(1, None, 25)
+    test(2, None, 25)

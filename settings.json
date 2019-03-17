@@ -1,1 +1,1 @@
-{"lr": 0, "s_gap": 200, "b_gap":5000, "show_img_gap": 100, "reload": "False","scalar_gap":10,"batch_size":4,"sim_on":0.5}
+{"lr": 5e-5, "s_gap": 600, "b_gap":15000, "show_img_gap": 100, "reload": "False","scalar_gap":10,"batch_size":4,"sim_on":0}
