@@ -561,7 +561,7 @@ class _NetG(nn.Module):
 
 
 class Improc(nn.Module):
-    def __init__(self):
+    def __init__(self, out_c):
         super(Improc, self).__init__()
 
         self.conv1 = nn.Conv2d(in_channels=9, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
@@ -571,7 +571,7 @@ class Improc(nn.Module):
         
         self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=1, stride=1, padding=0, bias=False)
         
-        self.conv4 = nn.Conv2d(in_channels=64, out_channels=3, kernel_size=1, stride=1, padding=0, bias=False)
+        self.conv4 = nn.Conv2d(in_channels=64, out_channels=out_c, kernel_size=1, stride=1, padding=0, bias=False)
         
         for m in self.modules():
             if isinstance(m, nn.Conv2d):

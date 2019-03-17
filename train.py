@@ -84,7 +84,7 @@ def clip(x, a, b):
 coding = SharpNet(6, 10)
 coding = nn.DataParallel(coding, device_ids=devices).cuda()
 
-improc = Improc()
+improc = Improc(3)
 improc = nn.DataParallel(improc, device_ids=devices).cuda()
 
 real_step = 0
@@ -106,8 +106,8 @@ def perception_loss(out, tar):
 
 if args.pretrained == "True":
     print("Load trained Net...")
-    coding.load_state_dict(torch.load('coding.pkl'))
-    improc.load_state_dict(torch.load('improc.pkl'))
+    coding.load_state_dict(torch.load('finetune_coding.pkl'))
+    improc.load_state_dict(torch.load('finetune_improc.pkl'))
     best_psnr = torch.load('best_psnr.pkl')
     print("Loaded")
 
@@ -720,7 +720,7 @@ def test(normal=1, writer=None, skip_num=1):
             t.set_description('psnr: %g ssim: %g' % ((psnr_a/(cnt*batch_size*7)), (ssim_a/(cnt*batch_size*7))))
             
             ## show sample result on tensorboard
-            if cnt % 20 == 0 and normal == 2 or cnt % 100 : 
+            if cnt % 50 == 0 or step == 0: 
                 show_flow = visual_flow(flowt0, batch_size)
                 writer.add_image('Test_Image/flow', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True)), real_step + cnt)
                 writer.add_image('Test_Image/in1', show(vutils.make_grid(input_var[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step + cnt)
@@ -907,6 +907,7 @@ if args.mode == "train":
             flow_loss = 0
             per_loss = 0
             sim_loss = 0
+            cyc_loss = 0
             output_cat = None
 
             pair_index_list = [(0, 2), (2, 4), (4, 6)]
@@ -934,15 +935,12 @@ if args.mode == "train":
                 input_var = torch.cat((f0, f1), 1)
                 out = coding(input_var)
 
-                flowt0_r = out[:,0:2,:,:]
-                flowt1_r = out[:,2:4,:,:]
+                flowt0 = out[:,0:2,:,:]
+                flowt1 = out[:,2:4,:,:]
                 mask = out[:,4:5,:,:]
                 flow0t = out[:,5:7,:,:]
                 flow1t = out[:,7:9,:,:]
                 
-                flowt1 = 0.5 * flowt1_r - 0.5 * flowt0_r
-                flowt0 = -flowt1 
-
                 ## use last SR ret
                 if SR_ret is not None:
                     f0 = SR_ret
@@ -983,6 +981,10 @@ if args.mode == "train":
                 
                 flow_loss += criterion(warped_frame0_f1, f0_sr) + criterion(warped_frame1_f0, f1_sr)
                 flow_loss += criterion(warped_frame0_ft, f0_sr) + criterion(warped_frame1_ft, f1_sr)
+                
+                flow1_t1 = warp(flowt1, flow1t, l0_size, scale_down=(1,1))
+                flow0_t0 = warp(flowt0, flow0t, l0_size, scale_down=(1,1))
+                cyc_loss += L1Loss(flowt0, -flowt1) + L1Loss(flow0t, -flow0_t0) + L1Loss(flow1t, -flow1_t1)
 
                 ## loss term 
                 tvl += tvLoss(flowt0)+ tvLoss(flowt1) + tvLoss(flow1t) + tvLoss(flow0t)
@@ -991,7 +993,7 @@ if args.mode == "train":
                 sim_loss += criterion(flow1t, flowt0.detach()) + criterion(flow0t, flowt1.detach())
 
             
-            loss +=  0.05 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss
+            loss +=  0.09 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss + 0.01 * cyc_loss
             
             loss += sim_on * sim_loss
                                  
@@ -1029,6 +1031,7 @@ if args.mode == "train":
             if real_step % scalar_gap == 0:
                 writer.add_scalar('loss', loss.data, real_step)
                 writer.add_scalar('sim_loss', sim_loss.data, real_step)
+                writer.add_scalar('cyc_loss', cyc_loss.data, real_step)
                 writer.add_scalar('per_loss', per_loss.data, real_step)
                 writer.add_scalar('bd_loss', bd_loss.data, real_step)
                 writer.add_scalar('tvl', tvl.data, real_step)
@@ -1056,8 +1059,8 @@ if args.mode == "train":
                 
             if real_step % s_test_gap == 0 and real_step > 10:
                 print("little Test!")
-                test(1, writer, 25)
-                test(2, writer, 25)
+                test(1, writer, 50)
+                test(2, writer, 50)
                 print("Test end.")
                 
                     
@@ -1100,5 +1103,5 @@ if args.mode == "train":
                         writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*tar_ind:3*tar_ind + 3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
 
 if args.mode == "test":
-    test(1, None, 25)
-    test(2, None, 25)
+    test(1, None, 50)
+    test(2, None, 50)
