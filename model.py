@@ -285,20 +285,12 @@ class SharpNet(torch.nn.Module):
         def Basic(intInput, intOutput):
             return torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=intInput, out_channels=intOutput, kernel_size=3, stride=2, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
-#                 nn.InstanceNorm2d(intOutput, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
-#                 nn.InstanceNorm2d(intOutput, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
-#                 nn.InstanceNorm2d(intOutput, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=intOutput, out_channels=intOutput, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=intOutput, momentum=0.5),
-#                 nn.InstanceNorm2d(intOutput, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
             )
 
@@ -306,16 +298,10 @@ class SharpNet(torch.nn.Module):
         
         self.D1 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=2, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=64, momentum=0.5),
-#                 nn.InstanceNorm2d(64, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
-#                 nn.InstanceNorm2d(128, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
-#                 nn.InstanceNorm2d(128, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
         )
         self.D2 = Basic(128, 256)
@@ -323,41 +309,30 @@ class SharpNet(torch.nn.Module):
         self.U1 = torch.nn.ConvTranspose2d(in_channels=512, out_channels=256, kernel_size=4, stride=2, padding=1)
         self.C4 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
-#                 nn.InstanceNorm2d(256, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
-#                 nn.InstanceNorm2d(256, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=256, momentum=0.5),
-#                 nn.InstanceNorm2d(256, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
         )
         self.U2 = torch.nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1)
         self.C5 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=128, momentum=0.5),
-#                 nn.InstanceNorm2d(128, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
-#                 torch.nn.BatchNorm2d(num_features=64, momentum=0.5),
-#                 nn.InstanceNorm2d(64, affine=True),
                 nn.LeakyReLU(0.2, inplace=True),
         )
         self.U3 = torch.nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1)
         self.C6 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=64, out_channels=56, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
-                torch.nn.Conv2d(in_channels=56, out_channels=5, kernel_size=3, stride=1, padding=1),
+                torch.nn.Conv2d(in_channels=56, out_channels=out_c, kernel_size=3, stride=1, padding=1),
         )
         self.C6_2 = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels=64, out_channels=56, kernel_size=3, stride=1, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
                 torch.nn.Conv2d(in_channels=56, out_channels=5, kernel_size=3, stride=1, padding=1),
         )
-
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 if m.bias is not None:
@@ -384,10 +359,7 @@ class SharpNet(torch.nn.Module):
         
         vU3 = self.U3(vC5)
         vC6 = self.C6(vU3)
-        vC6_2 = self.C6_2(vU3)
-        
-        #return vin[:,3:6] + vC6
-        return torch.cat((vC6, vC6_2), 1)
+        return vC6
 
     
 class OLDSharpNet(torch.nn.Module):
@@ -514,16 +486,19 @@ class _Residual_Block(nn.Module):
         return output 
 
 class _NetG(nn.Module):
-    def __init__(self):
+    def __init__(self, in_c):
         super(_NetG, self).__init__()
 
-        self.conv_input = nn.Conv2d(in_channels=12, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
+        self.conv_input = nn.Conv2d(in_channels=in_c, out_channels=96, kernel_size=9, stride=1, padding=4, bias=False)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
         
-        self.residual = self.make_layer(_Residual_Block, 16)
+        self.conv_2 = nn.Conv2d(in_channels=96, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
+        self.relu_2 = nn.LeakyReLU(0.2, inplace=True)
+        
+        self.residual = self.make_layer(_Residual_Block, 10)
 
         self.conv_mid = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn_mid = nn.InstanceNorm2d(64, affine=True)
+#         self.bn_mid = nn.InstanceNorm2d(64, affine=True)
 
         self.upscale4x = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=256, kernel_size=3, stride=1, padding=1, bias=False),
@@ -551,13 +526,14 @@ class _NetG(nn.Module):
 
     def forward(self, x):
         out = self.relu(self.conv_input(x))
+        out = self.relu_2(self.conv_2(out))
         residual = out
         out1 = self.residual(out)
-        out2 = self.bn_mid(self.conv_mid(out1))
-        out3 = torch.add(out2,residual)
+#         out2 = self.bn_mid(self.conv_mid(out1))
+        out3 = out1
         out4 = self.upscale4x(out3)
         out5 = self.conv_output(out4)
-        return [residual, out1, out2, out3, out4, out5]
+        return out5 
 
 
 class Improc(nn.Module):

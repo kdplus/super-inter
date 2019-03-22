@@ -34,7 +34,7 @@ from utils.loss_utils import TVLoss
 import json
 import adabound
 
-from model import Pyramid, Network, SharpNet, _NetG, Improc
+from model import Pyramid, Network, SharpNet, _NetG, Improc, OLDSharpNet 
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0' # change this if you have a multiple graphics cards and you want to utilize them
 torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
@@ -46,6 +46,7 @@ with open('settings.json') as f:
     settings = json.load(f)
 
 lr = settings['lr']
+lr1 = settings['lr1']
 handle_size = 256
 Max_steps = 10000000
 batch_size = settings['batch_size']
@@ -81,17 +82,23 @@ def clip(x, a, b):
     return x
 
 
-coding = SharpNet(6, 10)
+coding = OLDSharpNet(6, 5)
 coding = nn.DataParallel(coding, device_ids=devices).cuda()
 
-improc = Improc(3)
-improc = nn.DataParallel(improc, device_ids=devices).cuda()
+coding2 = SharpNet(6, 4)
+coding2 = nn.DataParallel(coding2, device_ids=devices).cuda()
+
+# improc = Improc(3)
+# improc = nn.DataParallel(improc, device_ids=devices).cuda()
+
+SR = _NetG(99)
+SR = nn.DataParallel(SR, device_ids=devices).cuda()
 
 real_step = 0
 coding.train()
-improc.train()
+coding2.train()
+SR.train()
 
-# vgg = Vgg16(requires_grad=False).cuda()
 vgg = vgg16(pretrained=True).cuda()
 loss_network = nn.Sequential(*list(vgg.features)[:31]).eval()
 mse_loss = nn.MSELoss()
@@ -106,9 +113,12 @@ def perception_loss(out, tar):
 
 if args.pretrained == "True":
     print("Load trained Net...")
-    coding.load_state_dict(torch.load('finetune_coding.pkl'))
-    improc.load_state_dict(torch.load('finetune_improc.pkl'))
+#     coding.load_state_dict(torch.load('best_coding_pl.pkl'))
+#     coding2.load_state_dict(torch.load('best_coding2.pkl'))
     best_psnr = torch.load('best_psnr.pkl')
+    coding.load_state_dict(torch.load('coding.pkl'))
+    coding2.load_state_dict(torch.load('coding2.pkl'))
+    SR.load_state_dict(torch.load('SR.pkl'))
     print("Loaded")
 
     
@@ -121,18 +131,9 @@ c2 = torch.nn.MSELoss()
 # optimizer = optim.Adam(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5)
 optimizer = optim.Adam(
 [
-    {"params": coding.module.C0.parameters()},
-    {"params": coding.module.C4.parameters()},
-    {"params": coding.module.D1.parameters()},
-    {"params": coding.module.D2.parameters()},
-    {"params": coding.module.D3.parameters()},
-    {"params": coding.module.U1.parameters()},
-    {"params": coding.module.U2.parameters()},
-    {"params": coding.module.C5.parameters()},
-    {"params": coding.module.U3.parameters()},
-    {"params": coding.module.C6.parameters()},
-    {"params": coding.module.C6_2.parameters()},
-    {"params": improc.parameters()},
+    {"params": coding.parameters(), 'lr':lr1},
+    {"params": coding2.parameters(), 'lr':lr1},
+    {"params": SR.parameters()},
 ],
 lr=lr,
 )
@@ -523,7 +524,8 @@ def get_psnr_ssim(out, tar):
 def test(normal=1, writer=None, skip_num=1):
     
     coding.eval()
-    improc.eval()
+    coding2.eval()
+    SR.eval()
     have_f2 = True
     if writer is None:
         writer = SummaryWriter()
@@ -555,11 +557,12 @@ def test(normal=1, writer=None, skip_num=1):
     SSIM = 0
     psnr_a = 0
     psnr_given = 0
+    psnr_list = [0 for i in range(0 , 7)]
     psnr_middle = 0
     ssim_a = 0
     down_sampling = torch.nn.AvgPool2d(kernel_size=2, stride=2)
 #     up_sampling = torch.nn.Upsample(scale_factor=2, mode='bilinear')
-
+    
     ## TESTING PHASE
     with torch.no_grad():
         t = tqdm(range(data_size//batch_size), desc='loop')
@@ -626,90 +629,159 @@ def test(normal=1, writer=None, skip_num=1):
             tvl = 0
             improc_loss = 0
             output_cat = None
+            no_middle = False
 
             ## FEED MODLE
             if normal == 1:
                 pair_index_list = [(0, 2), (2, 4), (4, 6)]
+                ind_a = [0, 1, 2, 3, 4, 5, 6]
             elif normal == 2 :
+                no_middle = True
                 pair_index_list = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+                ind_a = [0, 1, 2, 3, 4, 5, 6]
+
+#             if rand_int  == 0:
+#                 unit_size = 7
+#                 pair_index_list = [(0, 2), (2, 4), (4, 6)]
+#                 ind_a = [0, 1, 2, 3, 4, 5, 6]
+#             elif rand_int == 1:
+#                 unit_size = 5
+#                 pair_index_list = [(1, 3), (3, 5)]
+#                 ind_a = [1, 2, 3, 4, 5]
+#             elif rand_int == 2:
+#                 unit_size = 7
+#                 no_middle = True 
+#                 pair_index_list = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+#                 ind_a = [0, 1, 2, 3, 4, 5, 6]
                 
-    
-            
             ## for display
             input_var = torch.cat((invar[:,0:3], invar[:,6*3:6*3+3]), 1)
 #             target_var = invar_sr[:, tar_i*3:tar_i*3+3]
             
             SR_ret = None
             SR_list = []
+            left_list = []
             
             for pair_index in pair_index_list:
+                
+                optimizer.zero_grad()
+                loss = 0
+                inter_loss = 0
+                tvl = 0
+                improc_loss = 0
+                bd_loss = 0
+                sr_loss = 0
+                flow_loss = 0
+                per_loss = 0
+                sim_loss = 0
+                cyc_loss = 0
+                
                 f0_i = pair_index[0]
                 f1_i = pair_index[1]
                 tar_i = (f0_i + f1_i) // 2
                 
-                f0 = invar[:,f0_i*3:f0_i*3+3]
-                f1 = invar[:,f1_i*3:f1_i*3+3]
+                f0_lr = invar_lr[:,f0_i*3:f0_i*3+3]
+                f1_lr = invar_lr[:,f1_i*3:f1_i*3+3]
+                f0_enl = invar[:,f0_i*3:f0_i*3+3]
+                f1_enl = invar[:,f1_i*3:f1_i*3+3]
                 
                 f0_sr = invar_sr[:,f0_i*3:f0_i*3+3]
                 f1_sr = invar_sr[:,f1_i*3:f1_i*3+3]
                 f05_sr = invar_sr[:, tar_i*3:tar_i*3+3]
     
-                input_var = torch.cat((f0, f1), 1)
-                out = coding(input_var)
+                input_var_lr = torch.cat((f0_lr, f1_lr), 1)
+                input_var_enl = torch.cat((f0_enl, f1_enl), 1)
+            
+                # for middle frame
+                out = coding(input_var_enl)
+                # for given frame
+                out2 = coding2(input_var_lr)
 
+                # process middle flow
                 flowt0_r = out[:,0:2,:,:]
                 flowt1_r = out[:,2:4,:,:]
                 mask = out[:,4:5,:,:]
-                flow0t = out[:,5:7,:,:]
-                flow1t = out[:,7:9,:,:]
                 
-                flowt1 = 0.5 * flowt1_r - 0.5 * flowt0_r
-                flowt0 = -flowt1 
-
-                ## use last SR ret
-                if SR_ret is not None:
-                    f0 = SR_ret
-                    
-                warped_framet_f0 = warp(f0, flowt0, l0_size, scale_down=(1,1))
-                warped_framet_f1 = warp(f1, flowt1, l0_size, scale_down=(1,1))
-
-                output = blending(warped_framet_f0, warped_framet_f1, mask)
+                flowt1 = 0.5 * flowt1_r -0.5 * flowt0_r
+                flowt0 = -flowt1
                 
-                warped_frame0_ft = warp(output, flow0t, l0_size, scale_down=(1,1))
-                warped_frame0_f1 = warp(f1, flow0t * 2.0, l0_size, scale_down=(1,1))
-                warped_frame1_ft = warp(output, flow1t, l0_size, scale_down=(1,1))
-                warped_frame1_f0 = warp(f0, flow1t * 2.0, l0_size, scale_down=(1,1))
+                # blending middle Large middle frame
+                warped_framet_f0 = warp(f0_enl, flowt0, l0_size, scale_down=(1,1))
+                warped_framet_f1 = warp(f1_enl, flowt1, l0_size, scale_down=(1,1))
 
-                f0_food = torch.cat((f0, warped_frame0_ft, warped_frame0_f1), 1)
-                f1_food = torch.cat((f1, warped_frame1_ft, warped_frame1_f0), 1)
+                f05_ret = blending(warped_framet_f0, warped_framet_f1, mask)
                 
-                f0_ret = improc(f0_food)
-                f1_ret = improc(f1_food)
-                f05_ret = output
+                # process slide flow
+                flow01 = out2[:,0:2,:,:]
+                flow10 = out2[:,2:4,:,:]
+                flow01_enl = torch.nn.functional.interpolate(flow01, scale_factor=4, mode='bilinear',align_corners=False) 
+                flow10_enl = torch.nn.functional.interpolate(flow10, scale_factor=4, mode='bilinear',align_corners=False) 
+                
+                # process given frames
+                warped_frame0_ft = warp(f05_ret, flow01_enl / 2.0, l0_size, scale_down=(1,1))
+                warped_frame0_f1 = warp(f1_enl, flow01_enl, l0_size, scale_down=(1,1))
+                warped_frame1_ft = warp(f05_ret, flow10_enl / 2.0, l0_size, scale_down=(1,1))
+                warped_frame1_f0 = warp(f0_enl, flow10_enl, l0_size, scale_down=(1,1))
+                
+                warped_frame0_f1_lr = warp(f1_enl, flow01, l0_size, scale_down=(1,1))
+                warped_frame1_f0_lr = warp(f0_enl, flow10, l0_size, scale_down=(1,1))
+                warped_frame0_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow01 / 2.0, l0_size, scale_down=(1,1))
+                warped_frame1_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow10 / 2.0, l0_size, scale_down=(1,1))
+                
+                k = torch.zeros([48, 3, 4, 4])
+                for dim in range(0, 16):
+                    x = int(dim//4)
+                    y = int(dim % 4)
+                    k[dim*3, 0, x, y] = 1
+                    k[dim*3+1, 1, x, y] = 1 
+                    k[dim*3+2, 2, x, y] = 1 
+                kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
+                weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
+                
+                warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
+                warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
+                warped_frame1_ft_4_lr = torch.nn.functional.conv2d(warped_frame1_ft, weight, bias=None, stride=4, padding=0)
+                warped_frame1_f0_4_lr = torch.nn.functional.conv2d(warped_frame1_f0, weight, bias=None, stride=4, padding=0)
+                
+                f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
+                f1_food = torch.cat((f1_lr, warped_frame1_ft_4_lr, warped_frame1_f0_4_lr), 1)
+                
+                f0_ret = SR(f0_food)
+                f1_ret = SR(f1_food)
                 
                 if SR_ret is None:
                     SR_list.append(f0_ret)
-                
-                SR_ret = f1_ret
-                if normal == 1:
+                    SR_ret = f0_ret
+                if no_middle is False:
                     SR_list.append(f05_ret)
+                    inter_loss += criterion(f05_ret, f05_sr)
+                    per_loss += perception_loss(f05_ret, f05_sr)
                 SR_list.append(f1_ret)
+                    
+                sr_loss += criterion(f0_ret, f0_sr)
+                sr_loss += criterion(f1_ret, f1_sr)
+                per_loss += perception_loss(f0_ret, f0_sr)
+                per_loss += perception_loss(f1_ret, f1_sr)
                 
-            
+                left_list.append(warped_frame0_ft)
+                left_list.append(warped_frame0_f1)
+               
+
             ## COMPUTER PSNR SSIM and SAVE RESULT
             for ind in range(0, 7):
                 final_output = SR_list[ind]
                 target_var = invar_sr[:,ind*3:ind*3+3]
                 for img in range(0, batch_size):
-                    if skip_num == 1:
-                        ## save result picture
-                        store_base = './super-inter-test-nbn/'
-                        PIL.Image.fromarray((output[img].cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(step*batch_size+img) + 'im4-si.png')         
+                   # if skip_num == 1:
+                   #     ## save result picture
+                   #     store_base = './super-inter-test-nbn/'
+                   #     PIL.Image.fromarray((output[img].cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(step*batch_size+img) + 'im4-si.png')         
 
                     ## get psnr ssim
                     psnr_tmp, ssim_tmp = get_psnr_ssim(final_output[img], target_var[img])
                     psnr_a += psnr_tmp
                     ssim_a += ssim_tmp
+                    psnr_list[ind] += psnr_tmp
                     if ind % 2 == 1:
                         psnr_middle += psnr_tmp
                     else:
@@ -733,6 +805,10 @@ def test(normal=1, writer=None, skip_num=1):
                     writer.add_image(prefix + '/target'+str(ind), show(vutils.make_grid(invar_sr[:, ind*3:ind*3+3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step + cnt)
         
     ## show result in terminal
+    for ind in range(0, 7):
+        psnr_list[ind] /= (cnt * batch_size)
+        writer.add_scalar('psnr_'+ str(normal) + '_' + str(ind), psnr_list[ind], real_step)
+    
     final_ssim = ssim_a / (cnt*batch_size*7) 
     final_psnr = psnr_a / (cnt*batch_size*7)
     final_psnr_given = psnr_given / (cnt*batch_size*4)
@@ -759,8 +835,8 @@ def test(normal=1, writer=None, skip_num=1):
             writer.add_scalar('psnr_test_given', final_psnr_given, real_step)
             writer.add_scalar('psnr_test_middle', final_psnr_middle, real_step)
         elif normal == 2 :
-            writer.add_scalar('ssim_sr_f', final_ssim, real_step)
-            writer.add_scalar('psnr_sr_f', final_psnr, real_step)
+            writer.add_scalar('ssim_sr', final_ssim, real_step)
+            writer.add_scalar('psnr_sr', final_psnr, real_step)
         
     return final_psnr, final_ssim 
 
@@ -790,6 +866,8 @@ if args.mode == "train":
 #     softmax = nn.LogSoftmax(dim=1)
 
     for step in range(0, Max_steps):
+        data_size = len(data_list)
+        epoch_num = int(data_size / batch_size)
         batch_idx = step % epoch_num
         epoch_idx = step / epoch_num
 
@@ -800,6 +878,48 @@ if args.mode == "train":
             shuffle(data_list)
             print("Shuffled data!")
             print('Epoch Number: %d' % int(real_step / epoch_num))
+            
+        with open('settings.json') as f:
+            settings = json.load(f)
+        new_lr = settings['lr']
+        new_lr1 = settings['lr1']
+        s_test_gap = settings['s_gap']
+        b_test_gap = settings['b_gap']
+        scalar_gap = settings['scalar_gap']
+        show_img_gap = settings['show_img_gap']
+        reload = settings['reload']
+        sim_on = settings['sim_on']
+        batch_size = settings['batch_size']
+
+        if reload == 'True':
+            print("Reload best Net...")
+            coding.load_state_dict(torch.load('best_coding.pkl'))
+            coding2.load_state_dict(torch.load('best_coding2.pkl'))
+            SR.load_state_dict(torch.load('best_SR.pkl'))
+            best_psnr = torch.load('best_psnr.pkl')
+            print("Reloaded")
+
+            coding.train()
+            improc.train()
+
+            ## write reload to false
+            with open('settings.json', 'w') as f:
+                settings['reload'] = "False"
+                json.dump(settings, f)
+
+
+        if new_lr != lr or new_lr1 != lr1:
+            print("change lr")
+            lr = new_lr
+            lr1 = new_lr1
+            optimizer = optim.Adam(
+            [
+                {"params": coding.parameters(), 'lr':lr1},
+                {"params": coding2.parameters(), 'lr':lr1},
+                {"params": SR.parameters()},
+            ],
+            lr=lr,
+            )
 
         batch_data_list_frames = []
         batch_data_list = data_list[int(batch_idx * batch_size) : int((batch_idx + 1) * batch_size)]
@@ -828,58 +948,12 @@ if args.mode == "train":
 
             if real_step % (epoch_num * 5) == epoch_num * 5 - 1 and lr >= 1e-5:
                 print("change lr")
-                lr = lr / 2
+#                 lr = lr / 2
 #                 optimizer = optim.Adam(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5)
 #                 optimizer = optim.SGD(list(coding.parameters())+list(improc.parameters()), lr=lr, weight_decay=1e-5,  momentum=0.9)
 #                 optimizer = adabound.AdaBound(list(coding.parameters())+list(improc.parameters()), lr=1e-3, final_lr=0.1)
 
             ## IF I changed LR in settings file then change the lr of optimizer
-            with open('settings.json') as f:
-                settings = json.load(f)
-            new_lr = settings['lr']
-            s_test_gap = settings['s_gap']
-            b_test_gap = settings['b_gap']
-            scalar_gap = settings['scalar_gap']
-            show_img_gap = settings['show_img_gap']
-            reload = settings['reload']
-            sim_on = settings['sim_on']
-            batch_size = settings['batch_size']
-            
-            if reload == 'True':
-                print("Reload best Net...")
-                coding.load_state_dict(torch.load('best_coding.pkl'))
-                improc.load_state_dict(torch.load('best_improc.pkl'))
-                best_psnr = torch.load('best_psnr.pkl')
-                print("Reloaded")
-                
-                coding.train()
-                improc.train()
-                
-                ## write reload to false
-                with open('settings.json', 'w') as f:
-                    settings['reload'] = "False"
-                    json.dump(settings, f)
-                
-            
-            if new_lr != lr:
-                lr = new_lr
-                optimizer = optim.Adam(
-                    [
-                        {"params": coding.module.C0.parameters()},
-                        {"params": coding.module.C4.parameters()},
-                        {"params": coding.module.D1.parameters()},
-                        {"params": coding.module.D2.parameters()},
-                        {"params": coding.module.D3.parameters()},
-                        {"params": coding.module.U1.parameters()},
-                        {"params": coding.module.U2.parameters()},
-                        {"params": coding.module.C5.parameters()},
-                        {"params": coding.module.U3.parameters()},
-                        {"params": coding.module.C6.parameters()},
-                        {"params": coding.module.C6_2.parameters()},
-                        {"params": improc.parameters()},
-                    ],
-                    lr=lr,
-                )
                 
                 
 #             crop_idx_x = np.random.randint(ori_h - handle_size)
@@ -890,28 +964,32 @@ if args.mode == "train":
             in_frames = in_frames.cuda(devices[0])
 
             invar_sr = torch.autograd.Variable(in_frames)
-            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(down_sampling(down_sampling(invar_sr)),
+            invar_lr = down_sampling(down_sampling(invar_sr))
+            invar = torch.nn.functional.interpolate(torch.nn.functional.interpolate(invar_lr,
                                                    scale_factor=2, mode='bilinear',align_corners=False), 
                                                    scale_factor=2, mode='bilinear',align_corners=False)
 #             input_var = torch.autograd.Variable(torch.cat((invar[:,0:3], invar[:,6:9]), 1))
 #             target_var = torch.autograd.Variable(invar_sr[:,3:6])
             l0_size = handle_size
 
-            optimizer.zero_grad()
-            loss = 0
-            inter_loss = 0
-            tvl = 0
-            improc_loss = 0
-            bd_loss = 0
-            sr_loss = 0
-            flow_loss = 0
-            per_loss = 0
-            sim_loss = 0
-            cyc_loss = 0
             output_cat = None
+            no_middle = False
 
-            pair_index_list = [(0, 2), (2, 4), (4, 6)]
-            
+            rand_int = random.randint(0, 2)
+            if rand_int  == 0:
+                unit_size = 7
+                pair_index_list = [(0, 2), (2, 4), (4, 6)]
+                ind_a = [0, 1, 2, 3, 4, 5, 6]
+            elif rand_int == 1:
+                unit_size = 5
+                pair_index_list = [(1, 3), (3, 5)]
+                ind_a = [1, 2, 3, 4, 5]
+            elif rand_int == 2:
+                unit_size = 7
+                no_middle = True 
+                pair_index_list = [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 6)]
+                ind_a = [0, 1, 2, 3, 4, 5, 6]
+                
             ## for display
             input_var = torch.cat((invar[:,0:3], invar[:,6*3:6*3+3]), 1)
 #             target_var = invar_sr[:, tar_i*3:tar_i*3+3]
@@ -921,104 +999,149 @@ if args.mode == "train":
             left_list = []
             
             for pair_index in pair_index_list:
+                
+                optimizer.zero_grad()
+                loss = 0
+                inter_loss = 0
+                tvl = 0
+                improc_loss = 0
+                bd_loss = 0
+                sr_loss = 0
+                flow_loss = 0
+                per_loss = 0
+                sim_loss = 0
+                cyc_loss = 0
+                
                 f0_i = pair_index[0]
                 f1_i = pair_index[1]
                 tar_i = (f0_i + f1_i) // 2
                 
-                f0 = invar[:,f0_i*3:f0_i*3+3]
-                f1 = invar[:,f1_i*3:f1_i*3+3]
+                f0_lr = invar_lr[:,f0_i*3:f0_i*3+3]
+                f1_lr = invar_lr[:,f1_i*3:f1_i*3+3]
+                f0_enl = invar[:,f0_i*3:f0_i*3+3]
+                f1_enl = invar[:,f1_i*3:f1_i*3+3]
                 
                 f0_sr = invar_sr[:,f0_i*3:f0_i*3+3]
                 f1_sr = invar_sr[:,f1_i*3:f1_i*3+3]
                 f05_sr = invar_sr[:, tar_i*3:tar_i*3+3]
     
-                input_var = torch.cat((f0, f1), 1)
-                out = coding(input_var)
+                input_var_lr = torch.cat((f0_lr, f1_lr), 1)
+                input_var_enl = torch.cat((f0_enl, f1_enl), 1)
+            
+                # for middle frame
+                out = coding(input_var_enl)
+                # for given frame
+                out2 = coding2(input_var_lr)
 
-                flowt0 = out[:,0:2,:,:]
-                flowt1 = out[:,2:4,:,:]
+                # process middle flow
+                flowt0_r = out[:,0:2,:,:]
+                flowt1_r = out[:,2:4,:,:]
                 mask = out[:,4:5,:,:]
-                flow0t = out[:,5:7,:,:]
-                flow1t = out[:,7:9,:,:]
                 
-                ## use last SR ret
-                if SR_ret is not None:
-                    f0 = SR_ret
-                    
-                warped_framet_f0 = warp(f0, flowt0, l0_size, scale_down=(1,1))
-                warped_framet_f1 = warp(f1, flowt1, l0_size, scale_down=(1,1))
+                flowt1 = 0.5 * flowt1_r -0.5 * flowt0_r
+                flowt0 = -flowt1
+                
+                # blending middle Large middle frame
+                warped_framet_f0 = warp(f0_enl, flowt0, l0_size, scale_down=(1,1))
+                warped_framet_f1 = warp(f1_enl, flowt1, l0_size, scale_down=(1,1))
 
-                output = blending(warped_framet_f0, warped_framet_f1, mask)
+                f05_ret = blending(warped_framet_f0, warped_framet_f1, mask)
                 
-                warped_frame0_ft = warp(output, flow0t, l0_size, scale_down=(1,1))
-                warped_frame0_f1 = warp(f1, flow0t * 2.0, l0_size, scale_down=(1,1))
-                warped_frame1_ft = warp(output, flow1t, l0_size, scale_down=(1,1))
-                warped_frame1_f0 = warp(f0, flow1t * 2.0, l0_size, scale_down=(1,1))
-
-                f0_food = torch.cat((f0, warped_frame0_ft, warped_frame0_f1), 1)
-                f1_food = torch.cat((f1, warped_frame1_ft, warped_frame1_f0), 1)
+                # process slide flow
+                flow01 = out2[:,0:2,:,:]
+                flow10 = out2[:,2:4,:,:]
+                flow01_enl = torch.nn.functional.interpolate(flow01, scale_factor=4, mode='bilinear',align_corners=False) 
+                flow10_enl = torch.nn.functional.interpolate(flow10, scale_factor=4, mode='bilinear',align_corners=False) 
                 
-                f0_ret = improc(f0_food)
-                f1_ret = improc(f1_food)
-                f05_ret = output
+                # process given frames
+                warped_frame0_ft = warp(f05_ret, flow01_enl / 2.0, l0_size, scale_down=(1,1))
+                warped_frame0_f1 = warp(f1_enl, flow01_enl, l0_size, scale_down=(1,1))
+                warped_frame1_ft = warp(f05_ret, flow10_enl / 2.0, l0_size, scale_down=(1,1))
+                warped_frame1_f0 = warp(f0_enl, flow10_enl, l0_size, scale_down=(1,1))
+                
+                warped_frame0_f1_lr = warp(f1_enl, flow01, l0_size, scale_down=(1,1))
+                warped_frame1_f0_lr = warp(f0_enl, flow10, l0_size, scale_down=(1,1))
+                warped_frame0_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow01 / 2.0, l0_size, scale_down=(1,1))
+                warped_frame1_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow10 / 2.0, l0_size, scale_down=(1,1))
+                
+                k = torch.zeros([48, 3, 4, 4])
+                for dim in range(0, 16):
+                    x = int(dim//4)
+                    y = int(dim % 4)
+                    k[dim*3, 0, x, y] = 1
+                    k[dim*3+1, 1, x, y] = 1 
+                    k[dim*3+2, 2, x, y] = 1 
+                kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
+                weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
+                
+                warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
+                warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
+                warped_frame1_ft_4_lr = torch.nn.functional.conv2d(warped_frame1_ft, weight, bias=None, stride=4, padding=0)
+                warped_frame1_f0_4_lr = torch.nn.functional.conv2d(warped_frame1_f0, weight, bias=None, stride=4, padding=0)
+                
+                f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
+                f1_food = torch.cat((f1_lr, warped_frame1_ft_4_lr, warped_frame1_f0_4_lr), 1)
+                
+                f0_ret = SR(f0_food)
+                f1_ret = SR(f1_food)
                 
                 if SR_ret is None:
                     SR_list.append(f0_ret)
-                    # the head sr loss only count once
-                    sr_loss += criterion(f0_ret, f0_sr)
-                    per_loss += perception_loss(f0_ret, f0_sr)
-                
-                SR_ret = f1_ret
-                SR_list.append(f05_ret)
+                    SR_ret = f0_ret
+                if no_middle is False:
+                    SR_list.append(f05_ret)
+                    inter_loss += criterion(f05_ret, f05_sr)
+                    per_loss += perception_loss(f05_ret, f05_sr)
                 SR_list.append(f1_ret)
+                    
+                sr_loss += criterion(f0_ret, f0_sr)
+                sr_loss += criterion(f1_ret, f1_sr)
+                per_loss += perception_loss(f0_ret, f0_sr)
+                per_loss += perception_loss(f1_ret, f1_sr)
+                
                 left_list.append(warped_frame0_ft)
                 left_list.append(warped_frame0_f1)
                 
-                sr_loss += criterion(f1_ret, f1_sr)
-                inter_loss += criterion(f05_ret, f05_sr)
-                per_loss += perception_loss(f1_ret, f1_sr)
-                per_loss += perception_loss(f05_ret, f05_sr)
+                flow_loss += criterion(warped_frame0_f1_lr, f0_lr) + criterion(warped_frame1_f0_lr, f1_lr)
+                flow_loss += criterion(warped_frame0_ft_lr, f0_lr) + criterion(warped_frame1_ft_lr, f1_lr)
                 
-                flow_loss += criterion(warped_frame0_f1, f0_sr) + criterion(warped_frame1_f0, f1_sr)
-                flow_loss += criterion(warped_frame0_ft, f0_sr) + criterion(warped_frame1_ft, f1_sr)
-                
-                flow1_t1 = warp(flowt1, flow1t, l0_size, scale_down=(1,1))
-                flow0_t0 = warp(flowt0, flow0t, l0_size, scale_down=(1,1))
-                cyc_loss += L1Loss(flowt0, -flowt1) + L1Loss(flow0t, -flow0_t0) + L1Loss(flow1t, -flow1_t1)
+#                 flow1_t1 = warp(down_sampling(down_sampling(flowt1)), flow10 / 2.0, l0_size, scale_down=(1,1))
+#                 flow0_t0 = warp(down_sampling(down_sampling(flowt0)), flow01 / 2.0, l0_size, scale_down=(1,1))
+#                 cyc_loss += L1Loss(flowt0, -flowt1) + L1Loss(flow01 / 2.0, -flow0_t0) + L1Loss(flow10 / 2.0, -flow1_t1)
 
                 ## loss term 
-                tvl += tvLoss(flowt0)+ tvLoss(flowt1) + tvLoss(flow1t) + tvLoss(flow0t)
-                bd_loss += one_bd_loss(flowt0) + one_bd_loss(flowt1) + tvLoss(flow1t) + tvLoss(flow0t)
+                tvl += tvLoss(flowt0)+ tvLoss(flowt1) + tvLoss(flow10) + tvLoss(flow01)
+                bd_loss += one_bd_loss(flowt0) + one_bd_loss(flowt1) + tvLoss(flow10) + tvLoss(flow01)
                 
-                sim_loss += criterion(flow1t, flowt0.detach()) + criterion(flow0t, flowt1.detach())
+#                 sim_loss += criterion(flow10/2.0, flowt0.detach()) + criterion(flow01/2.0, flowt1.detach())
 
             
-            loss +=  0.09 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss + 0.01 * cyc_loss
-            
-            loss += sim_on * sim_loss
-                                 
-            # should be smooth but not smooth in detail
-            if tvl > 0.01 :
-                loss += 0.8 * tvl
-            
-            if bd_loss > 0.0001:
-                loss += 0.8 * bd_loss
-      
-            loss.backward()
-            optimizer.step()
+                loss +=  0.2 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss# + 0.05 * cyc_loss
+
+    #             loss += sim_on * sim_loss
+
+                # should be smooth but not smooth in detail
+                if tvl > 0.01 :
+                    loss += 0.8 * tvl
+
+                if bd_loss > 0.0001:
+                    loss += 0.8 * bd_loss
+
+                loss.backward()
+                optimizer.step()
 
             
             psnr_a = 0
-            for ind in range(0, 7):
+            for ind in range(0, unit_size):
                 final_output = SR_list[ind]
-                target_var = invar_sr[:,ind*3:ind*3+3]
+                target_var = invar_sr[:,ind_a[ind]*3:ind_a[ind]*3+3]
                 for img in range(0, batch_size):
                     out = (final_output[img].clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
                     tar = (target_var[img].data.cpu().numpy()*255.0).astype(numpy.uint8)
                     tar = img_as_float(np.array(tar))
                     out = img_as_float(np.array(out))
                     psnr_a += 10*np.log10(1.0/np.square(np.subtract(np.array(out), np.array(tar))).mean())
-            psnr_a = psnr_a / (batch_size * 7)
+            psnr_a = psnr_a / (batch_size * unit_size)
 
 #             psnr_b = 0
 #             for img in range(0, batch_size):
@@ -1030,13 +1153,13 @@ if args.mode == "train":
             ## Log information
             if real_step % scalar_gap == 0:
                 writer.add_scalar('loss', loss.data, real_step)
-                writer.add_scalar('sim_loss', sim_loss.data, real_step)
-                writer.add_scalar('cyc_loss', cyc_loss.data, real_step)
+#                 writer.add_scalar('sim_loss', sim_loss.data, real_step)
+#                 writer.add_scalar('cyc_loss', cyc_loss.data, real_step)
                 writer.add_scalar('per_loss', per_loss.data, real_step)
                 writer.add_scalar('bd_loss', bd_loss.data, real_step)
                 writer.add_scalar('tvl', tvl.data, real_step)
                 writer.add_scalar('psnr_a', psnr_a, real_step)
-                writer.add_scalar('inter_loss', inter_loss.data, real_step)
+                writer.add_scalar('inter_loss', inter_loss, real_step)
                 writer.add_scalar('sr_loss', sr_loss.data, real_step)
                 writer.add_scalar('flow_loss', flow_loss.data, real_step)
 
@@ -1050,25 +1173,29 @@ if args.mode == "train":
                 if now_psnr > best_psnr:
                     best_psnr = now_psnr
                     torch.save(coding.state_dict(), 'best_coding.pkl')
-                    torch.save(improc.state_dict(), 'best_improc.pkl')
+                    torch.save(coding2.state_dict(), 'best_coding2.pkl')
+                    torch.save(SR.state_dict(), 'best_SR.pkl')
                     torch.save(best_psnr, 'best_psnr.pkl')
                     torch.save(now_ssim, 'now_ssim.pkl')
                     
                 coding.train()
-                improc.train()
+                coding2.train()
+                SR.train()
                 
             if real_step % s_test_gap == 0 and real_step > 10:
                 print("little Test!")
-                test(1, writer, 50)
-                test(2, writer, 50)
+                test(1, writer, 25)
+                test(2, writer, 25)
                 print("Test end.")
                 
                     
                 torch.save(coding.state_dict(), 'coding.pkl')
-                torch.save(improc.state_dict(), 'improc.pkl')
+                torch.save(coding2.state_dict(), 'coding2.pkl')
+                torch.save(SR.state_dict(), 'SR.pkl')
                 torch.save(best_psnr, 'best_psnr.pkl')
                 coding.train()
-                improc.train()
+                coding2.train()
+                SR.train()
 
 
             if real_step % show_img_gap == 0:
@@ -1086,7 +1213,7 @@ if args.mode == "train":
                                 show_flow = np.concatenate((show_flow, flowimg), 0)
                         return show_flow
                     show_flow = visual_flow(flowt0, batch_size)
-                    show_flow_0t = visual_flow(flow0t, batch_size)
+                    show_flow_0t = visual_flow(flow01 / 2.0, batch_size)
                     
 
                     writer.add_image('Image/flowt0', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True)), real_step)
@@ -1094,14 +1221,17 @@ if args.mode == "train":
                     writer.add_image('Image/in1', show(vutils.make_grid(invar[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step)
                     writer.add_image('Image/in1_sr', show(vutils.make_grid(invar_sr[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step)
                     writer.add_image('Image/in2', show(vutils.make_grid(invar[:, 6*3:6*3+3].cpu(), normalize=False, scale_each=True)), real_step)
-                    for sr_out_ind in range(0, 7):
+                    for sr_out_ind in range(0, unit_size):
                         writer.add_image('Image/out_'+str(sr_out_ind), show(vutils.make_grid(SR_list[sr_out_ind].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
+#                         store_base = './line_check/'
+#                         for j in range(0, batch_size):
+#                             PIL.Image.fromarray((SR_list[sr_out_ind][j].data.cpu().clamp(0.0, 1.0).numpy().transpose(1, 2, 0)[:, :, ::-1] * 255.0).astype(numpy.uint8)).save(store_base + str(real_step+sr_out_ind) + 'im4-si.png')         
                         if sr_out_ind % 2 == 1:
                             writer.add_image('Image/out_t_'+str(sr_out_ind), show(vutils.make_grid(left_list[sr_out_ind-1].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
                             writer.add_image('Image/out_t_'+str(sr_out_ind)+'_f1', show(vutils.make_grid(left_list[sr_out_ind].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
-                    for tar_ind in range(0, 7):
-                        writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*tar_ind:3*tar_ind + 3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
+                    for tar_ind in range(0, unit_size):
+                        writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*ind_a[tar_ind]:3*ind_a[tar_ind] + 3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
 
 if args.mode == "test":
-    test(1, None, 50)
-    test(2, None, 50)
+    test(2, None, 25)
+    test(1, None, 25)
