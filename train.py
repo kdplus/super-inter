@@ -705,6 +705,10 @@ def test(normal=1, writer=None, skip_num=1):
                 flowt1 = 0.5 * flowt1_r -0.5 * flowt0_r
                 flowt0 = -flowt1
                 
+                # if last high resolution version is available then use it 
+                if SR_ret is not None:
+                    f0_enl = SR_ret
+                
                 # blending middle Large middle frame
                 warped_framet_f0 = warp(f0_enl, flowt0, l0_size, scale_down=(1,1))
                 warped_framet_f1 = warp(f1_enl, flowt1, l0_size, scale_down=(1,1))
@@ -723,10 +727,10 @@ def test(normal=1, writer=None, skip_num=1):
                 warped_frame1_ft = warp(f05_ret, flow10_enl / 2.0, l0_size, scale_down=(1,1))
                 warped_frame1_f0 = warp(f0_enl, flow10_enl, l0_size, scale_down=(1,1))
                 
-                warped_frame0_f1_lr = warp(f1_enl, flow01, l0_size, scale_down=(1,1))
-                warped_frame1_f0_lr = warp(f0_enl, flow10, l0_size, scale_down=(1,1))
-                warped_frame0_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow01 / 2.0, l0_size, scale_down=(1,1))
-                warped_frame1_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow10 / 2.0, l0_size, scale_down=(1,1))
+#                 warped_frame0_f1_lr = warp(f1_enl, flow01, l0_size, scale_down=(1,1))
+#                 warped_frame1_f0_lr = warp(f0_enl, flow10, l0_size, scale_down=(1,1))
+#                 warped_frame0_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow01 / 2.0, l0_size, scale_down=(1,1))
+#                 warped_frame1_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow10 / 2.0, l0_size, scale_down=(1,1))
                 
                 k = torch.zeros([48, 3, 4, 4])
                 for dim in range(0, 16):
@@ -738,15 +742,18 @@ def test(normal=1, writer=None, skip_num=1):
                 kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
                 weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
                 
-                warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
-                warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
+                if SR_ret is None:
+                    warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
+                    warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
                 warped_frame1_ft_4_lr = torch.nn.functional.conv2d(warped_frame1_ft, weight, bias=None, stride=4, padding=0)
                 warped_frame1_f0_4_lr = torch.nn.functional.conv2d(warped_frame1_f0, weight, bias=None, stride=4, padding=0)
                 
-                f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
+                if SR_ret is None:
+                    f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
                 f1_food = torch.cat((f1_lr, warped_frame1_ft_4_lr, warped_frame1_f0_4_lr), 1)
                 
-                f0_ret = SR(f0_food)
+                if SR_ret is None:
+                    f0_ret = SR(f0_food)
                 f1_ret = SR(f1_food)
                 
                 if SR_ret is None:
@@ -754,14 +761,14 @@ def test(normal=1, writer=None, skip_num=1):
                     SR_ret = f0_ret
                 if no_middle is False:
                     SR_list.append(f05_ret)
-                    inter_loss += criterion(f05_ret, f05_sr)
-                    per_loss += perception_loss(f05_ret, f05_sr)
+#                     inter_loss += criterion(f05_ret, f05_sr)
+#                     per_loss += perception_loss(f05_ret, f05_sr)
                 SR_list.append(f1_ret)
                     
-                sr_loss += criterion(f0_ret, f0_sr)
-                sr_loss += criterion(f1_ret, f1_sr)
-                per_loss += perception_loss(f0_ret, f0_sr)
-                per_loss += perception_loss(f1_ret, f1_sr)
+#                 sr_loss += criterion(f0_ret, f0_sr)
+#                 sr_loss += criterion(f1_ret, f1_sr)
+#                 per_loss += perception_loss(f0_ret, f0_sr)
+#                 per_loss += perception_loss(f1_ret, f1_sr)
                 
                 left_list.append(warped_frame0_ft)
                 left_list.append(warped_frame0_f1)
@@ -998,19 +1005,31 @@ if args.mode == "train":
             SR_list = []
             left_list = []
             
+            loss = 0
+            inter_loss = 0
+            tvl = 0
+            improc_loss = 0
+            bd_loss = 0
+            sr_loss = 0
+            flow_loss = 0
+            per_loss = 0
+            sim_loss = 0
+            cyc_loss = 0
+            
+            optimizer.zero_grad()
+            
+            k = torch.zeros([48, 3, 4, 4])
+            for dim in range(0, 16):
+                x = int(dim//4)
+                y = int(dim % 4)
+                k[dim*3, 0, x, y] = 1
+                k[dim*3+1, 1, x, y] = 1 
+                k[dim*3+2, 2, x, y] = 1 
+            kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
+            weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
+            
             for pair_index in pair_index_list:
                 
-                optimizer.zero_grad()
-                loss = 0
-                inter_loss = 0
-                tvl = 0
-                improc_loss = 0
-                bd_loss = 0
-                sr_loss = 0
-                flow_loss = 0
-                per_loss = 0
-                sim_loss = 0
-                cyc_loss = 0
                 
                 f0_i = pair_index[0]
                 f1_i = pair_index[1]
@@ -1041,6 +1060,11 @@ if args.mode == "train":
                 flowt1 = 0.5 * flowt1_r -0.5 * flowt0_r
                 flowt0 = -flowt1
                 
+                
+                # if last high resolution version is available then use it 
+#                 if SR_ret is not None:
+#                     f0_enl = SR_ret
+                    
                 # blending middle Large middle frame
                 warped_framet_f0 = warp(f0_enl, flowt0, l0_size, scale_down=(1,1))
                 warped_framet_f1 = warp(f1_enl, flowt1, l0_size, scale_down=(1,1))
@@ -1059,44 +1083,39 @@ if args.mode == "train":
                 warped_frame1_ft = warp(f05_ret, flow10_enl / 2.0, l0_size, scale_down=(1,1))
                 warped_frame1_f0 = warp(f0_enl, flow10_enl, l0_size, scale_down=(1,1))
                 
-                warped_frame0_f1_lr = warp(f1_enl, flow01, l0_size, scale_down=(1,1))
-                warped_frame1_f0_lr = warp(f0_enl, flow10, l0_size, scale_down=(1,1))
+                # for warp loss
+                warped_frame0_f1_lr = warp(f1_lr, flow01, l0_size, scale_down=(1,1))
+                warped_frame1_f0_lr = warp(f0_lr, flow10, l0_size, scale_down=(1,1))
                 warped_frame0_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow01 / 2.0, l0_size, scale_down=(1,1))
                 warped_frame1_ft_lr = warp(down_sampling(down_sampling(f05_ret)), flow10 / 2.0, l0_size, scale_down=(1,1))
                 
-                k = torch.zeros([48, 3, 4, 4])
-                for dim in range(0, 16):
-                    x = int(dim//4)
-                    y = int(dim % 4)
-                    k[dim*3, 0, x, y] = 1
-                    k[dim*3+1, 1, x, y] = 1 
-                    k[dim*3+2, 2, x, y] = 1 
-                kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
-                weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
                 
-                warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
-                warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
+                if SR_ret is None:
+                    warped_frame0_ft_4_lr = torch.nn.functional.conv2d(warped_frame0_ft, weight, bias=None, stride=4, padding=0)
+                    warped_frame0_f1_4_lr = torch.nn.functional.conv2d(warped_frame0_f1, weight, bias=None, stride=4, padding=0)
                 warped_frame1_ft_4_lr = torch.nn.functional.conv2d(warped_frame1_ft, weight, bias=None, stride=4, padding=0)
                 warped_frame1_f0_4_lr = torch.nn.functional.conv2d(warped_frame1_f0, weight, bias=None, stride=4, padding=0)
                 
-                f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
+                if SR_ret is None:
+                    f0_food = torch.cat((f0_lr, warped_frame0_ft_4_lr, warped_frame0_f1_4_lr), 1)
                 f1_food = torch.cat((f1_lr, warped_frame1_ft_4_lr, warped_frame1_f0_4_lr), 1)
                 
-                f0_ret = SR(f0_food)
+                if SR_ret is None:
+                    f0_ret = SR(f0_food)
                 f1_ret = SR(f1_food)
                 
                 if SR_ret is None:
                     SR_list.append(f0_ret)
                     SR_ret = f0_ret
+                    sr_loss += criterion(f0_ret, f0_sr)
+                    per_loss += perception_loss(f0_ret, f0_sr)
                 if no_middle is False:
                     SR_list.append(f05_ret)
-                    inter_loss += criterion(f05_ret, f05_sr)
-                    per_loss += perception_loss(f05_ret, f05_sr)
+                    inter_loss = inter_loss + criterion(f05_ret, f05_sr)
+                    per_loss = per_loss + perception_loss(f05_ret, f05_sr)
                 SR_list.append(f1_ret)
                     
-                sr_loss += criterion(f0_ret, f0_sr)
                 sr_loss += criterion(f1_ret, f1_sr)
-                per_loss += perception_loss(f0_ret, f0_sr)
                 per_loss += perception_loss(f1_ret, f1_sr)
                 
                 left_list.append(warped_frame0_ft)
@@ -1116,19 +1135,19 @@ if args.mode == "train":
 #                 sim_loss += criterion(flow10/2.0, flowt0.detach()) + criterion(flow01/2.0, flowt1.detach())
 
             
-                loss +=  0.2 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss# + 0.05 * cyc_loss
+            loss +=  0.2 * inter_loss + 0.1 * sr_loss + 0.08 * flow_loss + 0.005 * per_loss# + 0.05 * cyc_loss
 
     #             loss += sim_on * sim_loss
 
                 # should be smooth but not smooth in detail
-                if tvl > 0.01 :
-                    loss += 0.8 * tvl
+            if tvl > 0.01 :
+                loss += 0.8 * tvl
 
-                if bd_loss > 0.0001:
-                    loss += 0.8 * bd_loss
+            if bd_loss > 0.0001:
+                loss += 0.8 * bd_loss
 
-                loss.backward()
-                optimizer.step()
+            loss.backward()
+            optimizer.step()
 
             
             psnr_a = 0
