@@ -1062,8 +1062,8 @@ if args.mode == "train":
                 
                 
                 # if last high resolution version is available then use it 
-#                 if SR_ret is not None:
-#                     f0_enl = SR_ret
+                if SR_ret is not None:
+                    f0_enl = SR_ret
                     
                 # blending middle Large middle frame
                 warped_framet_f0 = warp(f0_enl, flowt0, l0_size, scale_down=(1,1))
