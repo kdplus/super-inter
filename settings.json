@@ -1,1 +1,1 @@
-{"lr_sr": 1e-5, "lr_flow":1e-5, "s_gap": 500, "b_gap":80000, "show_img_gap": 50, "reload": "False","scalar_gap":5,"batch_size":4,"sim_on":10, "tvl_w": 0.0, "srl_w": 1, "pl_w":0.005, "bdl_w":0.002, "loss_deg":2}
+{"lr_sr": 1e-5, "lr_flow":5e-4, "s_gap": 100, "b_gap":8000000, "show_img_gap": 10, "reload": "False","scalar_gap":2,"batch_size":12,"sim_on":10, "tvl_w": 100, "srl_w": 1.0, "pl_w":0.1, "bdl_w":50, "loss_deg":1.5}

@@ -28,13 +28,13 @@ from torchvision.models.vgg import vgg16
 
 
 from utils.image_utils import imwrite
-from utils.flow_utils import bilinear_interp, bi_interp_3d, bi_interp, to_there, forward_warp,meshgrid_3d, meshgrid, prop_refine_rd, prop_refine_which
+from utils.flow_utils import bilinear_interp_large, bilinear_interp, bi_interp_3d, bi_interp, to_there, forward_warp,meshgrid_3d, meshgrid, prop_refine_rd, prop_refine_which
 from utils.vis_utils import viz_flow
 from utils.loss_utils import TVLoss
 import json
 import adabound
 
-from model import FlowNet, SRNet, SharpNet_C2
+from model import FlowNet, SRNet, SharpNet_C2_rf
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0' # change this if you have a multiple graphics cards and you want to utilize them
 torch.backends.cudnn.enabled = True # make sure to use cudnn for computational performance
@@ -86,12 +86,20 @@ def clip(x, a, b):
 # SR = SRNet(51)
 # SR = nn.DataParallel(SR, device_ids=devices).cuda()
 
-FNet = SharpNet_C2(99, 96)
+FNet = SharpNet_C2_rf(6, 2)
 FNet = nn.DataParallel(FNet, device_ids=devices).cuda()
+
+PNet = FlowNet(11, 25)
+PNet = nn.DataParallel(PNet, device_ids=devices).cuda()
+
+RNet = FlowNet(11, 2)
+RNet = nn.DataParallel(RNet, device_ids=devices).cuda()
 
 
 real_step = 0
 FNet.train()
+PNet.train()
+RNet.train()
 
 vgg = vgg16(pretrained=True).cuda()
 loss_network = nn.Sequential(*list(vgg.features)[:31]).eval()
@@ -109,6 +117,8 @@ if args.pretrained == "True":
     print("Load trained Net...")
     best_psnr = torch.load('best_psnr.pkl')
     FNet.load_state_dict(torch.load('FNet.pkl'))
+    RNet.load_state_dict(torch.load('RNet.pkl'))
+    PNet.load_state_dict(torch.load('PNet.pkl'))
     print("Loaded")
 
     
@@ -118,12 +128,37 @@ cross_entory = torch.nn.CrossEntropyLoss()
 criterion = torch.nn.L1Loss()
 tvLoss = TVLoss()
 
-optimizer = optim.Adam(
+# optimizer = optim.Adam(
+optimizer = optim.Adamax(
 [
     {"params": FNet.parameters(), 'lr':lr_flow},
 ],
-lr=1e-5,
+lr=1e-5
 )
+
+def patch_it(tensor):
+    ret = None
+    start_list = [0, 1, 2, 3, 4]
+    h_size = tensor.shape[2]
+    w_size = tensor.shape[3]
+    pad = torch.nn.ReplicationPad2d(2)
+    tensor_padded = pad(tensor)
+    for h in range(0, 5):
+        for w in range(0, 5):
+#             if h == w and h != 1:
+#                 continue
+            h_start = start_list[h]
+            w_start = start_list[w]
+
+            h_end = h_size + h_start
+            w_end = w_size + w_start
+
+            part_tensor = tensor_padded[:,:,h_start:h_end, w_start:w_end]
+            if ret is None:
+                ret = part_tensor
+            else:
+                ret = torch.cat((ret, part_tensor), 1)
+    return ret
 
 def blending(f0, f1, mask):
     batch_size = f0.shape[0]
@@ -144,11 +179,24 @@ def warp(framein, flow, handle_size=256, scale_down=(1,1)):
     coor_x = grid_x + flow[:, 0, :, :] / scale_down[0]
     coor_y = grid_y + flow[:, 1, :, :] / scale_down[1]
 
-    output = bi_interp(framein, coor_x, coor_y, 'interpolate')
+#     output = bi_interp(framein, coor_x, coor_y, 'interpolate')
+    output = bilinear_interp(framein, coor_x, coor_y, 'interpolate')
+    return output
+def warp_block(framein, flow, handle_size=256, scale_down=(1,1)):
+    handle_size_x = flow.shape[2]
+    handle_size_y = flow.shape[3]
+    batch_size = flow.shape[0]
+    grid_x, grid_y = meshgrid(handle_size_y, handle_size_x)
+    grid_x = torch.autograd.Variable(torch.FloatTensor(np.tile(grid_x, [batch_size, 1, 1]))).cuda()
+    grid_y = torch.autograd.Variable(torch.FloatTensor(np.tile(grid_y, [batch_size, 1, 1]))).cuda()
+    coor_x = grid_x + flow[:, 0, :, :] / scale_down[0]
+    coor_y = grid_y + flow[:, 1, :, :] / scale_down[1]
+
+    output = bilinear_interp_large(framein, coor_x, coor_y, 'interpolate')
     return output
 
 def cube_warp(cube_in, flow_cube, handle_size=256, scale_down=(1,1)):
-    cube_in = cube_in.view(cube_in.shape[0], 32, 3, cube_in.shape[2], cube_in.shape[3]).permute(0,2,1,3,4)
+    cube_in = cube_in.view(cube_in.shape[0], 16, 3, cube_in.shape[2], cube_in.shape[3]).permute(0,2,1,3,4)
 #     flow_cube = flow_cube.view(flow_cube.shape[0], 1, flow_cube.shape[1], flow_cube.shape[2], flow_cube.shape[3])
     handle_size_x = flow_cube.shape[2]
     handle_size_y = flow_cube.shape[3]
@@ -577,11 +625,11 @@ if args.mode == "train":
             print("change lr_sr")
             lr_sr = new_lr_sr
             lr_flow = new_lr_flow
-            optimizer = optim.Adam(
+            optimizer = optim.Adamax(
             [
                 {"params": FNet.parameters(), 'lr':lr_flow},
             ],
-            lr=1e-5,
+            lr=1e-5
             )
 
         batch_data_list_frames = []
@@ -626,20 +674,10 @@ if args.mode == "train":
             output_cat = None
             no_middle = False
 
-            rand_int = random.randint(0, 2)
-            if rand_int  == 0:
-                unit_size = 4
-                index_list = [0, 2, 4, 6]
-                ind_a = [0, 2, 4, 6]
-            elif rand_int == 1:
-                unit_size = 3
-                index_list = [1, 3, 5]
-                ind_a = [1, 3, 5]
-            elif rand_int == 2:
-                unit_size = 7
-                no_middle = True 
-                index_list = [0, 1, 2, 3, 4, 5, 6]
-                ind_a = [0, 1, 2, 3, 4, 5, 6]
+            unit_size = 5
+            no_middle = True 
+            index_list = [0, 1, 2, 3, 4]
+            ind_a = [2, 3, 4, 5, 6]
                 
             ## for display
             input_var = torch.cat((invar[:,0:3], invar[:,6*3:6*3+3]), 1)
@@ -658,117 +696,189 @@ if args.mode == "train":
             kernel = torch.FloatTensor(k)#.unsqueeze(0).unsqueeze(0)
             weight = nn.Parameter(data=kernel, requires_grad=False).cuda()
             
-            optimizer.zero_grad()
-            loss = 0
-            inter_loss = 0
-            tvl = 0
-            improc_loss = 0
-            bd_loss = 0
-            sr_loss = 0
-            flow_loss = 0
-            per_loss = 0
-            sim_loss = 0
-            cyc_loss = 0
-        
-            f0_cube = None
             
             weight_on_loss = 1
+            pixel_shuffle = nn.PixelShuffle(4)
+            def depth_to_space(x_in):
+                # x_in should have order of rgb or xyz on the dimension 2. 
+                # this x_in is b * 3 * 16 * h * w
+                # output of this is b * 3(rgb or xyz) * 4h * 4w
+                x_ret = None
+                for ch in range(0, 3):
+                    x_in_ch = x_in[:, ch:ch+1]
+                    x_ret_ch = pixel_shuffle(x_in_ch[:,0,0:16,:,:])
+                    if x_ret is None:
+                        x_ret = x_ret_ch
+                    else:
+                        x_ret = torch.cat((x_ret, x_ret_ch), 1)
+                return x_ret
             for index in index_list:
-                f1_i = index
-                f1_lr = invar_lr[:,f1_i*3:f1_i*3+3]
-                f1_enl = invar[:,f1_i*3:f1_i*3+3]
+                optimizer.zero_grad()
+                loss = 0
+                inter_loss = 0
+                tvl = 0
+                improc_loss = 0
+                bd_loss = 0
+                sr_loss = 0
+                flow_loss = 0
+                flow_loss_large = 0
+                per_loss = 0
+                per_loss_large = 0
+                sim_loss = 0
+                cyc_loss = 0
+                rf_loss = 0
+
+                f0_i = index
+                f0_sr = invar_sr[:,f0_i*3:f0_i*3+3]
+    
+                f05_i = index + 1
+                f05_sr = invar_sr[:,f05_i*3:f05_i*3+3]
+                
+                f1_i = index + 2
                 f1_sr = invar_sr[:,f1_i*3:f1_i*3+3]
-
-
-                if f0_cube is None:
-                    f0_cube = torch.nn.functional.conv2d(f1_enl, weight, bias=None, stride=4, padding=0)
-                    black_cube = torch.nn.functional.conv2d(torch.zeros_like(f1_enl), weight, bias=None, stride=4, padding=0)
-                    input_cube = torch.cat((f0_cube, f0_cube), 1)
-                else:
-                    input_cube = f0_cube
-
-                input_food = torch.cat((f1_lr, input_cube), 1)
-
-                flow_cube = FNet(input_food)
-                ## maybe the order matters
-                flow10_new = torch.zeros([flow_cube.shape[0], 32, flow_cube.shape[2], flow_cube.shape[3], 3]).cuda()
-                for dim in range(0,32):
-                        flow10_new[:,dim,:,:,0] = flow_cube[:,3*dim,:,:]
-                        flow10_new[:,dim,:,:,1] = flow_cube[:,3*dim+1,:,:]
-                        flow10_new[:,dim,:,:,2] = flow_cube[:,3*dim+2,:,:]
-                flow10 = flow10_new 
-
-                # process given frame
-
-                ## TODO warp should use input food
-                f1_cube_out = cube_warp(input_cube, flow10, l0_size, scale_down=(1,1))
-                # this cube_out is b * 3 * 32 * h * w
-#                     f1_cube = f1_cube_out.permute(0,2,1,3,4).reshape(2,3,32,64,112)
-
-                f1_cube_ch0 = f1_cube_out[:,0:1]
-                f1_cube_ch1 = f1_cube_out[:,1:2]
-                f1_cube_ch2 = f1_cube_out[:,2:3]
-#                     print(f1_cube_ch2.shape)
-
-                # make f1_cube like r g b r g b again on 96 aixs
-                f1_cube = f1_cube_out.permute(0,2,1,3,4).reshape(batch_size,96,64,112)
-
-                pixel_shuffle = nn.PixelShuffle(4)
-#                     f1_ret = pixel_shuffle(f1_cube[:,0:48,:,:])
-
-                f1_ret_ch0 = pixel_shuffle(f1_cube_ch0[:,0,0:16,:,:])
-                f1_ret_ch1 = pixel_shuffle(f1_cube_ch1[:,0,0:16,:,:])
-                f1_ret_ch2 = pixel_shuffle(f1_cube_ch2[:,0,0:16,:,:])
-                f1_ret = torch.cat((f1_ret_ch0, f1_ret_ch1, f1_ret_ch2),1)
-
-                SR_list.append(f1_ret)
+                
+                flow10 = FNet(torch.cat((f0_sr, f1_sr), 1))
+                warped_frame1_f0 = warp(f0_sr, flow10, l0_size, scale_down=(1,1))
+                
+                left_list.append(warped_frame1_f0)
+                flow_loss += criterion(warped_frame1_f0, f1_sr)
+                
+                tvl += 5 *  tvLoss(flow10) 
+                per_loss += 5 * perception_loss(warped_frame1_f0, f1_sr) 
+                bd_loss += one_bd_loss(flow10)
+                
+#                 x, y = np.meshgrid(np.linspace(-1,1,7), np.linspace(-1,1,7))
+#                 d = np.sqrt(x*x+y*y)
+#                 sigma, mu = 0.2, 0.0
+#                 g = np.exp(-( (d-mu)**2 / ( 2.0 * sigma**2 ) ) )
+#                 g = g / g.sum()
+#                 g = torch.tensor(g).cuda()
+#                 warp_ret = None
+#                 pad = torch.nn.ReplicationPad2d(3)
+#                 f0_sr_padded = pad(f0_sr)
+#                 x_s = flow10.shape[2]
+#                 y_s = flow10.shape[3]
+#                 for x_i in range(0, 7):
+#                     for y_i in range(0, 7):
+#                         flow10_bak = flow10
+# #                         flow10_bak[:,0] = flow10_bak[:,0] + x_i - 3
+# #                         flow10_bak[:,1] = flow10_bak[:,1] + y_i - 3
+#                         warped_frame1_f0_tmp = warp(f0_sr_padded[:,:,x_i:x_i+x_s,y_i:y_i+y_s], flow10_bak, l0_size, scale_down=(1,1))
+#                         if warp_ret is None:
+#                             warp_ret= torch.zeros_like(warped_frame1_f0_tmp)
+#                         warp_ret = warp_ret + g[x_i, y_i] * warped_frame1_f0_tmp
+#                 flow_loss_large = criterion(warp_ret, f1_sr)
+#                 per_loss_large = 5 * perception_loss(warp_ret, f1_sr) 
+#                 left_list.append(warp_ret)
+#                 warp_ret = warp_block(f0_sr, flow10, l0_size, scale_down=(1,1))
+#                 flow_loss_large = criterion(warp_ret, f1_sr)
+#                 per_loss_large = 5 * perception_loss(warp_ret, f1_sr) 
+#                 left_list.append(warp_ret)
+                
+                
+                        
+                        
+                    
+                
+                
+#                 rf_times = 2
+#                 for rf_t in range(0, rf_times):
+#                     ## PNET
+#                     error_map = torch.sum(torch.abs(f1_sr - warped_frame1_f0), 1).unsqueeze(1)
+#                     p_weight = torch.nn.functional.relu(PNet(torch.cat((f0_sr, f1_sr, torch.abs(f1_sr - warped_frame1_f0), flow10), 1))) 
+# #                     p_weight = p_weight + torch.ones_like(p_weight) * 1e-8
+#                     p_weight = torch.nn.functional.softmax(p_weight, dim=1)
+# #                     print(p_weight[0,:,48:50,48:50])
+                                                        
+#                     patched_flow_x = patch_it(flow10[:,0:1])
+#                     patched_flow_y = patch_it(flow10[:,1:2])
+#                     p_weight_sum = torch.sum(p_weight, 1)
+# #                     print(p_weight_sum)
+                    
+# #                     print(patched_flow_x.shape, p_weight.shape)
+#                     propa_flow_x = torch.sum(p_weight * patched_flow_x, 1) #/ p_weight_sum 
+#                     propa_flow_y = torch.sum(p_weight * patched_flow_y, 1) #/ p_weight_sum 
+                    
+#                     flow10 = torch.cat((propa_flow_x.unsqueeze(1), propa_flow_y.unsqueeze(1)), 1)
+#                     warped_frame1_f0 = warp(f0_sr, flow10, l0_size, scale_down=(1,1))
+#                     left_list.append(warped_frame1_f0)
+                    
+#                     if real_step % scalar_gap == 0:
+#                         last_loss = now_loss
+#                         now_loss = criterion(warped_frame1_f0, f1_sr)
+#                         cmp_loss = now_loss - last_loss
+#                         writer.add_scalar('cmp_loss_' + str(rf_t)+'_p', cmp_loss, real_step)
+                    
+#                     rf_loss += criterion(warped_frame1_f0 * error_map, f1_sr * error_map)
+#                     tvl +=   tvLoss(flow10) 
+#                     per_loss += perception_loss(warped_frame1_f0, f1_sr) 
+#                     bd_loss += one_bd_loss(flow10)
+#                     error_map = torch.sum(torch.abs(f1_sr - warped_frame1_f0), 1).unsqueeze(1)
+                    
+                    
+#                     ## RNET
+#                     flow10_r = RNet(torch.cat((f0_sr, f1_sr, torch.abs(f1_sr - warped_frame1_f0),  flow10), 1))
+                    
+#                     flow10 = flow10 + flow10_r
+#                     warped_frame1_f0 = warp(f0_sr, flow10, l0_size, scale_down=(1,1))
+#                     left_list.append(warped_frame1_f0)
+#                     rf_loss += criterion(warped_frame1_f0 * error_map, f1_sr * error_map)
+#                     if real_step % scalar_gap == 0:
+#                         last_loss = now_loss
+#                         now_loss = criterion(warped_frame1_f0, f1_sr)
+#                         cmp_loss = now_loss - last_loss
+#                         writer.add_scalar('cmp_loss_' + str(rf_t)+'_rf', cmp_loss, real_step)
+#                     tvl +=   tvLoss(flow10) 
+#                     per_loss += perception_loss(warped_frame1_f0, f1_sr) 
+#                     bd_loss += one_bd_loss(flow10)
+                    
+                SR_list.append(warped_frame1_f0)
 
                 ## loss term 
-                tvl +=  tvLoss(flow10) * weight_on_loss 
-                bd_loss += one_bd_loss(flow10) * weight_on_loss
-                sr_loss += criterion(f1_ret, f1_sr)* weight_on_loss
-                per_loss += perception_loss(f1_ret, f1_sr) * weight_on_loss
-#                 flow_loss += criterion(warped_frame1_f0_lr, f1_lr)
 
                 # for recurrent
-                f0_cube = f1_cube
         
-                weight_on_loss /= loss_deg
+#                 weight_on_loss /= loss_deg
 
 #             if bd_loss > 0.0001:
-            loss += bdl_w * bd_loss
-#             if tvl > 0.01 :
-            loss += tvl_w * tvl
-            loss += srl_w * sr_loss + pl_w * per_loss
+                loss += bdl_w * bd_loss
+    #             if tvl > 0.01 :
+                loss += tvl_w * tvl
+                loss += srl_w * flow_loss + pl_w * per_loss + 10 * rf_loss + srl_w * flow_loss_large + pl_w * per_loss_large
 
 
 
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+#                 for m in FNet.modules():
+#                     if isinstance(m, nn.Conv2d):
+#                         print(m.weight.grad)
+                optimizer.step()
 
             
-            psnr_a = 0
-            for ind in range(0, unit_size):
-                final_output = SR_list[ind]
-                target_var = invar_sr[:,ind_a[ind]*3:ind_a[ind]*3+3]
-                for img in range(0, batch_size):
-                    out = (final_output[img].clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
-                    tar = (target_var[img].data.cpu().numpy()*255.0).astype(numpy.uint8)
-                    tar = img_as_float(np.array(tar))
-                    out = img_as_float(np.array(out))
-                    psnr_a += 10*np.log10(1.0/np.square(np.subtract(np.array(out), np.array(tar))).mean())
-            psnr_a = psnr_a / (batch_size * unit_size)
 
             ## Log information
             if real_step % scalar_gap == 0:
+                psnr_a = 0
+                for ind in range(0, unit_size):
+                    final_output = SR_list[ind]
+                    target_var = invar_sr[:,ind_a[ind]*3:ind_a[ind]*3+3]
+                    for img in range(0, batch_size):
+                        out = (final_output[img].clamp(0.0, 1.0).data.cpu().numpy() * 255.0).astype(numpy.uint8)
+                        tar = (target_var[img].data.cpu().numpy()*255.0).astype(numpy.uint8)
+                        tar = img_as_float(np.array(tar))
+                        out = img_as_float(np.array(out))
+                        psnr_a += 10*np.log10(1.0/np.square(np.subtract(np.array(out), np.array(tar))).mean())
+                psnr_a = psnr_a / (batch_size * unit_size)
                 writer.add_scalar('loss', loss.data, real_step)
                 writer.add_scalar('per_loss', per_loss.data, real_step)
+                writer.add_scalar('rf_loss', rf_loss, real_step)
                 writer.add_scalar('tvl', tvl.data, real_step)
                 writer.add_scalar('bd_loss', bd_loss.data, real_step)
                 writer.add_scalar('psnr_a', psnr_a, real_step)
-                writer.add_scalar('sr_loss', sr_loss.data, real_step)
+#                 writer.add_scalar('sr_loss', sr_loss.data, real_step)
 #                 writer.add_scalar('sim_loss', sim_loss.data, real_step)
-#                 writer.add_scalar('flow_loss', flow_loss.data, real_step)
+                writer.add_scalar('flow_loss', flow_loss.data, real_step)
+                writer.add_scalar('flow_loss_large', flow_loss_large, real_step)
 
             epoch_now = real_step / (epoch_num*1.0)
             if real_step % b_test_gap == 0 and real_step > 10:# and epoch_num > 2:
@@ -778,7 +888,8 @@ if args.mode == "train":
                 if now_psnr > best_psnr: 
                     best_psnr = now_psnr 
                     torch.save(FNet.state_dict(), 'best_FNet.pkl')
-                    torch.save(SR.state_dict(), 'best_SR.pkl')
+                    torch.save(RNet.state_dict(), 'best_RNet.pkl')
+                    torch.save(PNet.state_dict(), 'best_PNet.pkl')
                     torch.save(best_psnr, 'best_psnr.pkl')
                     torch.save(now_ssim, 'now_ssim.pkl')
                     
@@ -787,6 +898,8 @@ if args.mode == "train":
                 
             if real_step % s_test_gap == 0 and real_step > 10:
                 torch.save(FNet.state_dict(), 'FNet.pkl')
+                torch.save(RNet.state_dict(), 'RNet.pkl')
+                torch.save(PNet.state_dict(), 'PNet.pkl')
 #                 torch.save(SR.state_dict(), 'SR.pkl')
 #                 torch.save(best_psnr, 'best_psnr.pkl')
 #                 print("little Test!")
@@ -811,29 +924,17 @@ if args.mode == "train":
                             else:
                                 show_flow = np.concatenate((show_flow, flowimg), 0)
                         return show_flow
-                    show_flow = visual_flow(flow_cube[:,0:3,:,:], batch_size)
-#                     show_flow_o = visual_flow(flow10_c2, batch_size)
-
-                    f0_cube = torch.nn.functional.conv2d(f1_enl, weight, bias=None, stride=4, padding=0)
-                    black_cube = torch.nn.functional.conv2d(torch.zeros_like(f1_enl), weight, bias=None, stride=4, padding=0)
-                    cube_in = torch.cat((f0_cube, black_cube), 1)
-                    cube_in = cube_in.view(cube_in.shape[0], 32, 3, cube_in.shape[2], cube_in.shape[3]).permute(0,2,1,3,4)
-                    writer.add_image('Image/in1_cube', show(vutils.make_grid(cube_in[:, :,0].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/out1_cube', show(vutils.make_grid(f1_cube[:, 0:3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/out1_cube_before', show(vutils.make_grid(f1_cube_out[:, :,0].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
+                    show_flow = visual_flow(flow10, batch_size)
         
-                    writer.add_image('Image/flow10', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True)), real_step)
-#                     writer.add_image('Image/flow10_c2', show_f(vutils.make_grid(torch.from_numpy(show_flow_o).permute(0,3,1,2), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/in1', show(vutils.make_grid(invar[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/in1_sr', show(vutils.make_grid(invar_sr[:, 0:3].cpu(), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/in2', show(vutils.make_grid(invar[:, 6*3:6*3+3].cpu(), normalize=False, scale_each=True)), real_step)
+                    writer.add_image('Image/flow10', show_f(vutils.make_grid(torch.from_numpy(show_flow).permute(0,3,1,2), normalize=False, scale_each=True, nrow=4)), real_step)
+                    writer.add_image('Image/in1_sr', show(vutils.make_grid(invar_sr[:, 0:3].cpu(), normalize=False, scale_each=True, nrow=4)), real_step)
+                    writer.add_image('Image/in2_sr', show(vutils.make_grid(invar_sr[:, 6:9].cpu(), normalize=False, scale_each=True, nrow=4)), real_step)
                     for sr_out_ind in range(0, len(SR_list)):
-                        writer.add_image('Image/out_'+str(sr_out_ind), show(vutils.make_grid(SR_list[sr_out_ind].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
-                    writer.add_image('Image/out_small', show(vutils.make_grid(f1_cube[:,0:3,:,:].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
-#                     for ind in range(0, len(left_list)):
-#                         writer.add_image('Image/left_'+str(ind), show(vutils.make_grid(left_list[ind].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
+                        writer.add_image('Image/out_'+str(sr_out_ind), show(vutils.make_grid(SR_list[sr_out_ind].clamp(0.0, 1.0).data.cpu(), nrow=4, normalize=False, scale_each=True)), real_step)
+                    for ind in range(0, len(left_list)):
+                        writer.add_image('Image/left_'+str(ind), show(vutils.make_grid(left_list[ind].clamp(0.0, 1.0).data.cpu(), normalize=False, nrow=4, scale_each=True)), real_step)
                     for tar_ind in range(0, unit_size):
-                        writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*ind_a[tar_ind]:3*ind_a[tar_ind] + 3].clamp(0.0, 1.0).data.cpu(), normalize=False, scale_each=True)), real_step)
+                        writer.add_image('Image/target_'+str(tar_ind), show(vutils.make_grid(invar_sr[:, 3*ind_a[tar_ind]:3*ind_a[tar_ind] + 3].clamp(0.0, 1.0).data.cpu(), nrow=4, normalize=False, scale_each=True)), real_step)
 
 if args.mode == "test":
     test(2, None, 25)
